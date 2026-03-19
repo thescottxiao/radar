@@ -2,7 +2,7 @@
 
 > A WhatsApp-native AI assistant that helps busy parents coordinate their kids' activities.
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Last updated:** 2026-03-19
 **Status:** Pre-development
 
@@ -46,7 +46,7 @@ The product operates on a dual autonomy model:
 - Sync calendars across all caregivers and flag scheduling conflicts
 - Generate preparation checklists for events (gifts, gear, forms, RSVPs)
 - Coordinate transportation logistics between caregivers
-- Manage recurring event seasons with exception handling
+- Manage recurring activity schedules (sports seasons, music lessons, tutoring, etc.) with exception handling
 - Send smart reminders (daily when actionable, weekly summary always)
 - Accept forwarded emails and calendar URLs as an alternative to OAuth
 - Accept voice notes via WhatsApp (transcribed and processed as text)
@@ -89,8 +89,9 @@ A family (tenant) is defined by a **WhatsApp group**. Any number of caregivers c
 
 - **Identification:** Each caregiver is identified by their WhatsApp phone number within the group.
 - **Authority:** All caregivers can issue instructions, approve actions, and claim tasks with equal authority.
-- **Concurrent input:** First response wins. If two caregivers reply near-simultaneously to a pending action, the first processed response executes. No consensus required.
-- **Conflict resolution:** If caregivers give contradictory instructions (not simultaneous — e.g., one says "RSVP yes" and later another says "RSVP no"), the bot surfaces the conflict to the group and does not act until resolved.
+- **Concurrent input on AUTO actions:** For low-stakes internal actions (calendar writes, acknowledging info), the first response is sufficient. These are reversible and don't require group consensus.
+- **Concurrent input on SUGGEST actions:** For external-facing actions (RSVPs, emails, purchases), if multiple caregivers respond within a short window and their responses contradict (e.g., one says "send it" while another says "wait" or edits the draft), the bot pauses execution and surfaces the conflict to the group. Two identical approvals (both say "yes") execute normally. The bot does not act on external actions until the conflict is resolved.
+- **Sequential conflict resolution:** If a caregiver gives an instruction that contradicts an earlier instruction from another caregiver (e.g., one says "RSVP yes" and later another says "actually RSVP no"), the bot surfaces the conflict to the group and does not act until resolved.
 - **Adding caregivers:** New members added to the WhatsApp group are automatically detected. The bot sends them a welcome message and OAuth link.
 - **Removing caregivers:** Members who leave the group have their OAuth tokens revoked. Their historical data remains in the family profile.
 
@@ -222,7 +223,7 @@ Event {
 
   # Recurrence
   is_recurring: boolean (default false)
-  season_id: uuid (nullable, FK → Season)
+  recurring_schedule_id: uuid (nullable, FK → RecurringSchedule)
 
   # RSVP
   rsvp_status: enum (pending | accepted | declined | not_applicable)
@@ -253,14 +254,17 @@ Event {
 }
 ```
 
-### 5.5 Season
+### 5.5 Recurring Schedule
+
+A generalized model for any activity that repeats on a pattern over a bounded time period. Covers sports seasons, weekly music lessons, tutoring sessions, swim classes, after-school programs, religious education, and any other recurring activity.
 
 ```
-Season {
+RecurringSchedule {
   id: uuid
   family_id: uuid (FK → Family)
   child_id: uuid (FK → Child)
-  activity_name: string (e.g. "soccer")
+  activity_name: string (e.g. "soccer", "piano lessons", "swim class")
+  activity_type: enum (sport | music | academic | social | medical | other)
   pattern: string (e.g. "every Tuesday and Thursday, 4:00–5:30pm")
   location: string
   start_date: date
@@ -352,7 +356,7 @@ FamilyLearning {
 - Events: parties, practices, games, school events, appointments, recitals, camps
 - Action items: forms to sign, payments due, items to bring, waivers, registration deadlines
 - Schedule changes: time changes, cancellations, location changes for existing events
-- Recurring patterns: season schedules embedded in emails
+- Recurring patterns: recurring activity schedules embedded in emails
 - Child references: fuzzy match names against family's Child records
 - Contact information: other parents' names and contact info
 
@@ -376,7 +380,7 @@ FamilyLearning {
 - `location_change`: Location updated → update Event, notify group if transport implications
 - `attendee_change`: New attendees added → check if new child involved
 
-**Season awareness:** If a recurring event instance is modified or cancelled, update only that instance in the Season exceptions list. Do not modify the overall season pattern.
+**Recurring schedule awareness:** If a recurring event instance is modified or cancelled, update only that instance in the RecurringSchedule exceptions list. Do not modify the overall schedule pattern.
 
 **ICS feed processing:** Same change detection logic applied to diffed ICS feed data on each poll cycle.
 
@@ -418,7 +422,7 @@ FamilyLearning {
 - **Conflict detection:** Before adding any event, check all caregivers' calendars for overlapping time blocks. Surface conflicts to the group.
 - **Cross-child conflicts:** If two children have overlapping events at different locations, surface with transport implications: "Jake has soccer at 3pm and Emma has piano at 3:30pm — different locations. Who's taking whom?"
 - **Playdate scheduling:** Manages the flow: check family availability → suggest times → draft message to other parent (SUGGEST mode) → track response.
-- **Season management:** After season pattern is confirmed, auto-create individual Event instances for each occurrence.
+- **Recurring schedule management:** After recurring schedule pattern is confirmed, auto-create individual Event instances for each occurrence.
 
 ### 6.5 Logistics Planner Agent
 
@@ -431,8 +435,8 @@ FamilyLearning {
   - Sports season start → gear check (reference child's gear_inventory), registration forms
   - School event → permission slips, payments, items to bring
   - Camp → registration, medical forms, packing list
-- **Gear tracking:** Maintain gear_inventory on Child records. Surface gaps at season transitions: "Does Jake still have cleats that fit? He was size 3 last season."
-- **Transportation planning:** For recurring events (seasons), propose a standing transport schedule. For one-off events, surface assignment question to group.
+- **Gear tracking:** Maintain gear_inventory on Child records. Surface gaps at schedule transitions: "Does Jake still have cleats that fit? He was size 3 last season."
+- **Transportation planning:** For recurring schedules, propose a standing transport schedule. For one-off events, surface assignment question to group.
 - **Assignment nudging:** If a transport assignment or task is unclaimed and the event is approaching, nudge the group again. Timing is context-aware (not a fixed timer): urgency scales with proximity to event.
 
 ### 6.6 Research Agent
@@ -459,14 +463,14 @@ FamilyLearning {
    - Delivered via WhatsApp template message.
 
 2. **Weekly Sunday summary** — Always fires, regardless of content.
-   - Content: week ahead overview, family learnings to review (from FamilyLearning entries where `surfaced_in_summary = false`), season schedule updates, prep status across upcoming events.
+   - Content: week ahead overview, family learnings to review (from FamilyLearning entries where `surfaced_in_summary = false`), recurring schedule updates, prep status across upcoming events.
    - Delivered via WhatsApp template message.
 
 3. **Immediate triggers** — Fire in real-time, regardless of digest schedule.
    - New event detected with short RSVP window (< 48 hours to deadline)
    - Scheduling conflict detected
    - Unclaimed transport assignment with event approaching (context-aware timing)
-   - Season exception detected (practice cancelled, rescheduled)
+   - Recurring schedule exception detected (practice cancelled, rescheduled)
 
 ---
 
@@ -650,28 +654,40 @@ Bot: Both accounts connected ✓
 
 ---
 
-## 10. Recurring Events and Seasons
+## 10. Recurring Schedules
+
+Recurring schedules are a generalized model for any activity that repeats on a pattern over a bounded time period. This covers sports seasons, weekly music lessons, tutoring sessions, swim classes, after-school programs, dance classes, religious education, and any other recurring activity.
 
 ### Detection
 
-**From email:** If an email contains an explicit season schedule (e.g., "practice every Tuesday/Thursday, March 4 – May 22"), the Email Extraction Agent extracts the full pattern and creates a Season record.
+**From email:** If an email contains an explicit recurring schedule (e.g., "piano lessons every Wednesday, 3:30–4:30pm, September through May" or "practice every Tuesday/Thursday, March 4 – May 22"), the Email Extraction Agent extracts the full pattern and creates a RecurringSchedule record.
 
 **From calendar:** If the Calendar Change Detector observes 3+ consecutive events with the same title, similar time, and same location, it infers a recurring pattern.
 
 ### Confirmation
 
-In both cases, the bot confirms with the group before tracking as a season:
+In both cases, the bot confirms with the group before tracking as a recurring schedule:
 
 ```
 Bot: Looks like Jake has soccer practice every Tuesday and
      Thursday, 4–5:30pm at Westfield Fields through May 22.
-     Should I track this as a season?
+     Should I track this as a recurring schedule?
 
 Caregiver: yes
 
-Bot: Done — Jake's soccer season tracked through May 22.
+Bot: Done — Jake's soccer tracked through May 22.
      I'll manage the schedule and let you know about
      any changes.
+```
+
+```
+Bot: It looks like Emma has piano lessons every Wednesday,
+     3:30–4:30pm at Miller Music Studio. When does this
+     series end?
+
+Caregiver: end of May
+
+Bot: Got it — Emma's piano lessons tracked through May 31.
 ```
 
 ### Exception Handling
@@ -679,17 +695,22 @@ Bot: Done — Jake's soccer season tracked through May 22.
 - **Cancellation:** Remove the instance, log exception. Report in next daily digest.
 - **Reschedule:** Update the instance datetime, log exception. Check for conflicts at new time.
 - **Location change:** Update the instance location. Notify group if transport implications.
-- **Makeup game/event:** Create a new Event instance linked to the season. Check for conflicts.
+- **Makeup/extra session:** Create a new Event instance linked to the recurring schedule. Check for conflicts.
 
 Exceptions are handled silently (no confirmation needed) and reported in the next daily digest.
 
-### Season End
+### Schedule End
 
-When the last event in a season passes:
+When the last event in a recurring schedule passes:
 ```
 Bot: Jake's soccer season ended this week. Gear to return:
      shin guards (borrowed from league). Want me to archive
-     the season?
+     this schedule?
+```
+
+```
+Bot: Emma's piano lesson series ends this week. Want to
+     renew for next term?
 ```
 
 ---
@@ -750,14 +771,14 @@ Go beyond reminders for existing events. Identify things the family should be do
 | Missed medical/dental | No dental appointment in 7+ months per child | Suggest scheduling |
 | Playdate drought | No playdate for a child in 3+ weeks | Suggest reaching out to recent contacts |
 | Upcoming school break | School break detected on calendar with no camp/activity scheduled | Surface camp discovery options |
-| Season registration | Known activity season approaching (based on prior year data) | Alert about registration windows |
+| Activity registration | Known recurring activity approaching (based on prior year data) | Alert about registration windows |
 | Stale RSVP | Event RSVP status is `pending` and deadline is within 48 hours | Urgent reminder |
 | Uncompleted prep | Event has pending prep tasks within 48 hours of event | Escalated reminder with checklist status |
 | Birthday approaching | Child's friend birthday within 2 weeks, no party invite received | "Has [friend] mentioned a birthday party? Want me to check?" |
 
 ### Implementation
 
-The gap detection engine runs as part of the Reminder Engine's daily evaluation job. It queries the Event Registry, ActionItem list, Family Profiles, and Season records to identify gaps, then generates natural-language messages surfaced through appropriate notification channels.
+The gap detection engine runs as part of the Reminder Engine's daily evaluation job. It queries the Event Registry, ActionItem list, Family Profiles, and RecurringSchedule records to identify gaps, then generates natural-language messages surfaced through appropriate notification channels.
 
 All gap detection outputs are SUGGEST mode — they present options and ask, never auto-act.
 
@@ -771,7 +792,7 @@ All gap detection outputs are SUGGEST mode — they present options and ask, nev
 | Send WhatsApp messages to family group | AUTO | Reminders, digests, suggestions |
 | Update Event Registry | AUTO | From extraction pipeline |
 | Update Family Profiles | AUTO | Silent learning, weekly summary for review |
-| Track season schedules and exceptions | AUTO | After initial confirmation |
+| Track recurring schedules and exceptions | AUTO | After initial confirmation |
 | Nudge group for unclaimed tasks | AUTO | Context-aware timing |
 | Generate and update prep checklists | AUTO | Based on event type |
 | Send emails to external parties | SUGGEST | Draft shown, caregiver approves |
@@ -797,7 +818,7 @@ All gap detection outputs are SUGGEST mode — they present options and ask, nev
 - Each caregiver's Google refresh token is encrypted at rest (AES-256, key in GCP Secret Manager or equivalent).
 - Token refresh is handled automatically by the ingestion pipeline.
 - If a token expires or is revoked, the bot notifies that specific caregiver in the group with a re-auth link.
-- Token scope: Gmail read-only + Calendar read/write.
+- Token scope: Gmail read-only + Calendar read/write. Radar never has send/modify/delete access to caregiver email.
 
 ### Scaling
 
@@ -809,11 +830,35 @@ All gap detection outputs are SUGGEST mode — they present options and ask, nev
 
 ## 15. Security and Privacy
 
+### Email Sending Architecture
+
+Radar sends external emails (RSVPs, playdate messages, coach emails) from **its own domain**, not from the caregiver's Gmail account. This is a deliberate security decision.
+
+- **Send address:** `{caregiver-name}@notifications.radar.app` or similar. The caregiver's name appears as the sender display name (e.g., "Sarah via Radar").
+- **Send infrastructure:** Dedicated email sending service (SendGrid, Postmark, or AWS SES). Not Gmail API.
+- **Gmail scope stays read-only.** Radar never has send, modify, or delete access to any caregiver's email account. This eliminates an entire class of security risks.
+- **Safety window:** After a caregiver approves an external email, the bot waits 10 seconds before sending and displays: "Sending in 10 seconds... reply 'cancel' to stop." This prevents accidental sends from hasty approvals.
+- **Full audit log:** Every sent email is logged with: full content, recipient address, which caregiver approved it, timestamp, and the original draft + edit history.
+
 ### Data Handling
 
 - **Emails are processed ephemerally.** Extract structured data (Event, ActionItem, FamilyLearning), then discard raw email content. Never store full email bodies in the database.
 - **Forward-to emails:** Same ephemeral processing. Raw email stored only in a processing queue with a 1-hour TTL.
 - **Voice notes:** Transcribed, then audio deleted. Transcript processed as text and subject to same retention as conversation memory.
+- **Calendar events:** Radar has read/write access to Google Calendar. Calendar writes use soft-delete with undo — when Radar removes a calendar event, it marks it cancelled in the Event Registry first and sends a notification. Hard delete only after caregiver confirmation.
+
+### Threat Model
+
+| Threat | Risk | Mitigation |
+|--------|------|------------|
+| **Incorrect email sent to wrong person** | Embarrassment, privacy breach | All external emails are SUGGEST mode with explicit recipient shown. 10-second cancel window after approval. Audit log of every sent email. Contradictory concurrent responses pause execution. |
+| **Incorrect event created from misextracted email** | Caregiver shows up wrong place/time | Extraction confidence scoring (< 0.6 triggers explicit "Is this right?"). Correction feedback loop. High-precision, low-recall default. |
+| **Prompt injection via email** | Malicious email manipulates LLM extraction to take unauthorized actions | Email content treated as untrusted data, never as LLM instructions. Extraction uses structured JSON output schema enforcement. Extraction output is data only — never executed as agent commands. |
+| **Tenant data leakage** | Family A's data appears in Family B's context | Row-level security in PostgreSQL. family_id set at request boundary. All data queries scoped. LLM prompts constructed only from queried (tenant-scoped) data. No cross-tenant caching. |
+| **OAuth token compromise** | Attacker gains read access to caregiver's email + read/write to calendar | AES-256 encryption at rest. Key in GCP Secret Manager (not env vars). Minimal scope: gmail.readonly + calendar.events only. Token revocation on detected breach. Periodic key rotation. |
+| **Accidental calendar deletion** | Bot removes legitimate calendar events | Soft-delete with undo window. Bot notifies group before removing any calendar event. Hard delete only after explicit confirmation. |
+| **Email account compromise via OAuth** | Attacker uses Radar's OAuth to access caregiver email | Gmail scope is read-only. Radar cannot send from, modify, or delete caregiver emails. Worst case: attacker reads emails, which requires both database breach AND decrypting the refresh token. |
+| **Rate limit / abuse** | Bot sends excessive WhatsApp messages or emails | Per-family rate limits on outbound messages. Circuit breaker if error rates spike. Admin alerts on anomalous sending patterns. |
 
 ### Caregiver Controls
 
@@ -844,6 +889,7 @@ All gap detection outputs are SUGGEST mode — they present options and ask, nev
 | Hosting | GCP Cloud Run | Serverless, auto-scales, Pub/Sub native |
 | Scheduling | Cloud Scheduler → Pub/Sub | Daily digest, weekly summary, watch renewals |
 | Auth | Google OAuth 2.0 | Per-caregiver, encrypted token storage |
+| Email sending | SendGrid, Postmark, or AWS SES | Sends from Radar's domain, not caregiver's Gmail. Delivery monitoring, bounce handling. |
 | Encryption | AES-256 + GCP Secret Manager | OAuth tokens at rest |
 | Web UI | Minimal (OAuth redirect only) | Single-page, no framework needed |
 
@@ -886,7 +932,7 @@ All gap detection outputs are SUGGEST mode — they present options and ask, nev
 **Scope:**
 - Logistics Planner Agent (prep checklists, gear tracking, transport coordination)
 - Research Agent (gift suggestions, camp discovery)
-- Season detection and management
+- Recurring schedule detection and management
 - Proactive gap detection
 - Family profile learning (silent + weekly summary)
 - Full suggest UX (all 5 interaction patterns)
@@ -915,11 +961,12 @@ All major decisions made during the design process:
 | Data sources (MVP) | Gmail push + GCal webhooks + forward-to email + ICS feeds | Real-time for connected accounts; forward path for privacy-cautious users |
 | Autonomy model | Auto internal, suggest external | Internal actions are low-risk; external actions need human judgment |
 | Family model | WhatsApp group = tenant, N caregivers, no roles | Neutral on family structure; group dynamics handle coordination naturally |
-| Concurrent input | First response wins | Trusted group; speed matters more than consensus |
+| Concurrent input | Consensus for SUGGEST, first-response for AUTO | External-facing actions must not execute on contradictory concurrent input; internal actions are low-stakes and reversible |
 | Suggest UX | Open conversation state | More natural than buttons; LLM handles edit/approve classification |
 | Onboarding | Conversational, 3 exchanges | Low friction; web UI only for OAuth |
 | Family learning | Silent storage, weekly summary for correction | Keeps bot helpful without feeling intrusive |
-| Recurring events | Confirm pattern once, then manage autonomously | One-time setup cost; ongoing benefit |
+| Recurring schedules | Generalized beyond sports (music, tutoring, swim, etc.). Confirm pattern once, then manage autonomously | One-time setup cost; ongoing benefit. "Season" was too sports-specific. |
+| Email sending | Send from Radar's own domain, not caregiver Gmail | Gmail stays read-only. Eliminates risk of accidental sends/deletes from caregiver accounts. 10-second cancel window on approved sends. |
 | Notifications | Daily when actionable + weekly always + immediate for urgent | High signal-to-noise ratio by default |
 | OpenClaw | Architecture inspiration only, don't build on it | Single-user design is a dealbreaker for multi-tenant SaaS; security concerns |
 | Work calendar | Deferred | Valuable but complex; free/busy API adds privacy concerns |

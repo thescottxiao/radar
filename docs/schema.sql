@@ -114,12 +114,18 @@ CREATE TYPE rsvp_method AS ENUM (
     'reply_email', 'click_link', 'form', 'phone', 'not_applicable'
 );
 
-CREATE TABLE seasons (
+-- Generalized recurring schedule: sports seasons, music lessons, tutoring, swim, etc.
+CREATE TYPE activity_type AS ENUM (
+    'sport', 'music', 'academic', 'social', 'medical', 'other'
+);
+
+CREATE TABLE recurring_schedules (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
     child_id        UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
-    activity_name   TEXT NOT NULL,
-    pattern         TEXT NOT NULL,  -- human-readable, e.g. "every Tuesday and Thursday, 4:00-5:30pm"
+    activity_name   TEXT NOT NULL,  -- e.g. "soccer", "piano lessons", "swim class"
+    activity_type   activity_type NOT NULL DEFAULT 'other',
+    pattern         TEXT NOT NULL,  -- human-readable, e.g. "every Wednesday, 3:30-4:30pm"
     location        TEXT,
     start_date      DATE NOT NULL,
     end_date        DATE NOT NULL,
@@ -130,12 +136,12 @@ CREATE TABLE seasons (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_seasons_family ON seasons(family_id);
-CREATE INDEX idx_seasons_child ON seasons(child_id);
+CREATE INDEX idx_recurring_schedules_family ON recurring_schedules(family_id);
+CREATE INDEX idx_recurring_schedules_child ON recurring_schedules(child_id);
 
-CREATE TABLE season_exceptions (
+CREATE TABLE schedule_exceptions (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    season_id       UUID NOT NULL REFERENCES seasons(id) ON DELETE CASCADE,
+    recurring_schedule_id UUID NOT NULL REFERENCES recurring_schedules(id) ON DELETE CASCADE,
     family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
     original_date   DATE NOT NULL,
     exception_type  TEXT NOT NULL CHECK (exception_type IN ('cancelled', 'rescheduled', 'location_change', 'makeup')),
@@ -145,8 +151,8 @@ CREATE TABLE season_exceptions (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_season_exceptions_season ON season_exceptions(season_id);
-CREATE INDEX idx_season_exceptions_family ON season_exceptions(family_id);
+CREATE INDEX idx_schedule_exceptions_schedule ON schedule_exceptions(recurring_schedule_id);
+CREATE INDEX idx_schedule_exceptions_family ON schedule_exceptions(family_id);
 
 CREATE TABLE events (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -162,7 +168,7 @@ CREATE TABLE events (
 
     -- Recurrence
     is_recurring    BOOLEAN NOT NULL DEFAULT FALSE,
-    season_id       UUID REFERENCES seasons(id) ON DELETE SET NULL,
+    recurring_schedule_id UUID REFERENCES recurring_schedules(id) ON DELETE SET NULL,
 
     -- RSVP
     rsvp_status     rsvp_status NOT NULL DEFAULT 'not_applicable',
@@ -184,7 +190,7 @@ CREATE TABLE events (
 
 CREATE INDEX idx_events_family ON events(family_id);
 CREATE INDEX idx_events_datetime ON events(family_id, datetime_start);
-CREATE INDEX idx_events_season ON events(season_id);
+CREATE INDEX idx_events_recurring ON events(recurring_schedule_id);
 CREATE INDEX idx_events_type ON events(family_id, type);
 
 -- Junction table: events <-> children
@@ -343,6 +349,27 @@ CREATE INDEX idx_pending_family ON pending_actions(family_id);
 CREATE INDEX idx_pending_active ON pending_actions(family_id, status) WHERE status = 'awaiting_approval';
 
 -- ============================================================
+-- Sent email audit log (emails sent from Radar's domain)
+-- ============================================================
+
+CREATE TABLE sent_emails (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    pending_action_id UUID REFERENCES pending_actions(id),
+    from_address    TEXT NOT NULL,  -- Radar's send domain, e.g. "sarah@notifications.radar.app"
+    to_address      TEXT NOT NULL,
+    subject         TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    approved_by     UUID NOT NULL REFERENCES caregivers(id),
+    edit_history    JSONB[] DEFAULT '{}',  -- draft revisions before approval
+    sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    delivery_status TEXT DEFAULT 'sent',  -- sent, delivered, bounced, failed
+    delivery_provider_id TEXT  -- SendGrid/Postmark message ID for tracking
+);
+
+CREATE INDEX idx_sent_emails_family ON sent_emails(family_id);
+
+-- ============================================================
 -- Extraction feedback (for model improvement)
 -- ============================================================
 
@@ -372,8 +399,9 @@ ALTER TABLE caregivers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE children ENABLE ROW LEVEL SECURITY;
 ALTER TABLE child_friends ENABLE ROW LEVEL SECURITY;
 ALTER TABLE gear_inventory ENABLE ROW LEVEL SECURITY;
-ALTER TABLE seasons ENABLE ROW LEVEL SECURITY;
-ALTER TABLE season_exceptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recurring_schedules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE schedule_exceptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sent_emails ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE event_children ENABLE ROW LEVEL SECURITY;
 ALTER TABLE prep_tasks ENABLE ROW LEVEL SECURITY;
@@ -401,10 +429,13 @@ CREATE POLICY tenant_isolation_child_friends ON child_friends
 CREATE POLICY tenant_isolation_gear ON gear_inventory
     USING (family_id = current_setting('app.current_family_id')::UUID);
 
-CREATE POLICY tenant_isolation_seasons ON seasons
+CREATE POLICY tenant_isolation_recurring_schedules ON recurring_schedules
     USING (family_id = current_setting('app.current_family_id')::UUID);
 
-CREATE POLICY tenant_isolation_season_exceptions ON season_exceptions
+CREATE POLICY tenant_isolation_schedule_exceptions ON schedule_exceptions
+    USING (family_id = current_setting('app.current_family_id')::UUID);
+
+CREATE POLICY tenant_isolation_sent_emails ON sent_emails
     USING (family_id = current_setting('app.current_family_id')::UUID);
 
 CREATE POLICY tenant_isolation_event_children ON event_children

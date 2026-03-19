@@ -151,7 +151,7 @@ Initiates Google OAuth flow for a caregiver.
 - `caregiver_phone`: WhatsApp phone number (for linking)
 
 **Behavior:**
-1. Generate OAuth URL with scopes: `gmail.readonly`, `calendar`, `calendar.events`.
+1. Generate OAuth URL with scopes: `gmail.readonly`, `calendar.events`. Note: Gmail is read-only. Radar never has send/modify/delete access to caregiver email. External emails are sent from Radar's own domain.
 2. Store state parameter mapping to family_id + caregiver_phone.
 3. Redirect to Google OAuth consent screen.
 
@@ -176,6 +176,39 @@ Handles Google OAuth redirect.
 
 ---
 
+## Email Sending (Internal)
+
+Radar sends external emails from its own domain, not from caregiver Gmail accounts.
+
+### POST `/internal/email/send`
+
+Triggered when a caregiver approves an external email (RSVP, playdate message, coach email).
+
+**Payload:**
+```json
+{
+  "family_id": "uuid",
+  "pending_action_id": "uuid",
+  "approved_by": "uuid (caregiver)",
+  "from_display_name": "Sarah",
+  "to": "sophia.mom@gmail.com",
+  "subject": "Re: Sophia's Birthday Party",
+  "body": "Hi! Emma would love to come..."
+}
+```
+
+**Behavior:**
+1. Wait 10 seconds (cancel window). If caregiver sends "cancel" during this window, abort.
+2. Send email via SendGrid/Postmark/SES from `{name}@notifications.radar.app`.
+3. Log in `sent_emails` table with full content, recipient, approving caregiver, and edit history.
+4. Update pending action status to `approved`.
+5. Send WhatsApp confirmation: "Sent ✓"
+6. Monitor delivery status via webhook from email provider.
+
+**From address format:** `sarah-via-radar@notifications.radar.app` with display name "Sarah via Radar"
+
+---
+
 ## Internal API (not externally exposed)
 
 These are internal service routes used by the scheduler and background workers.
@@ -196,7 +229,7 @@ Triggered by Cloud Scheduler every morning at the family's configured `daily_dig
 Triggered by Cloud Scheduler on the family's configured `weekly_summary_day` at `weekly_summary_time`.
 
 **Behavior:**
-1. For each family, compile: week ahead, unconfirmed FamilyLearning entries, season updates, prep status.
+1. For each family, compile: week ahead, unconfirmed FamilyLearning entries, recurring schedule updates, prep status.
 2. Generate summary via LLM.
 3. Send WhatsApp template. Always sends, regardless of content.
 4. Mark surfaced FamilyLearning entries as `surfaced_in_summary = true`.
