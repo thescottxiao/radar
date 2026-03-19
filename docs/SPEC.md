@@ -1,0 +1,946 @@
+# Radar — Product Specification
+
+> A WhatsApp-native AI assistant that helps busy parents coordinate their kids' activities.
+
+**Version:** 0.1.0
+**Last updated:** 2026-03-19
+**Status:** Pre-development
+
+---
+
+## Table of Contents
+
+1. [Product Overview](#1-product-overview)
+2. [Target Customer](#2-target-customer)
+3. [Family Model](#3-family-model)
+4. [Data Sources and Ingestion](#4-data-sources-and-ingestion)
+5. [Data Models](#5-data-models)
+6. [Agent Specifications](#6-agent-specifications)
+7. [Interaction Patterns](#7-interaction-patterns)
+8. [Notification System](#8-notification-system)
+9. [Onboarding](#9-onboarding)
+10. [Recurring Events and Seasons](#10-recurring-events-and-seasons)
+11. [Family Profile Learning](#11-family-profile-learning)
+12. [Proactive Gap Detection](#12-proactive-gap-detection)
+13. [Autonomy Matrix](#13-autonomy-matrix)
+14. [Multi-Tenancy](#14-multi-tenancy)
+15. [Security and Privacy](#15-security-and-privacy)
+16. [Technical Stack](#16-technical-stack)
+17. [Build Phases](#17-build-phases)
+18. [Decision Log](#18-decision-log)
+19. [Deferred Features](#19-deferred-features)
+
+---
+
+## 1. Product Overview
+
+Radar is a multi-tenant SaaS product that lives in a WhatsApp group chat with a family's caregivers. It connects to each caregiver's Gmail and Google Calendar, automatically detects events, deadlines, and action items, and helps the family stay coordinated.
+
+The product operates on a dual autonomy model:
+- **AUTO:** Internal actions (calendar writes, reminders, family state updates) execute without approval.
+- **SUGGEST:** External-facing actions (emails to other parents, RSVPs, purchase links, registrations) are drafted and presented for caregiver approval before execution.
+
+### Core Capabilities
+
+- Detect events and action items from incoming emails (school newsletters, party invites, league announcements, camp registrations)
+- Sync calendars across all caregivers and flag scheduling conflicts
+- Generate preparation checklists for events (gifts, gear, forms, RSVPs)
+- Coordinate transportation logistics between caregivers
+- Manage recurring event seasons with exception handling
+- Send smart reminders (daily when actionable, weekly summary always)
+- Accept forwarded emails and calendar URLs as an alternative to OAuth
+- Accept voice notes via WhatsApp (transcribed and processed as text)
+- Proactively identify gaps (missed appointments, scheduling opportunities, unscheduled activities)
+
+---
+
+## 2. Target Customer
+
+### Primary Persona
+
+Dual-income households with children ages 5–14 who are actively involved in activities (sports, school events, social events, camps). This is the window where coordination burden peaks — kids are old enough to have independent schedules but not old enough to manage them.
+
+### Key Insights from User Research (7 interviews)
+
+- Pain increases significantly around age 8 when kids start participating in multiple activities.
+- More kids and more activities compound the problem non-linearly.
+- One caregiver (often the mother) disproportionately shoulders the coordination burden.
+- Every family interviewed uses Google Calendar + texting + in-person weekly meetings.
+- The sub-tasks around events (buying gifts, signing waivers, packing gear) cause more stress than the events themselves.
+- Playdate coordination is consistently cited as the most unstructured and difficult category.
+- Important information is frequently buried in school emails that don't look like invitations.
+- Work calendar conflicts are a major source of scheduling failures, but caregivers don't want to fully share work calendars with a family tool.
+- Willingness to pay: $10–15/month at entry; up to $50/month for families with 3+ active kids who see full value.
+
+### Trust Barriers
+
+- Some users are not comfortable granting email OAuth access (Chantel: "Not open to giving an application access to my email, but if I can forward it to something and it includes it in the calendar").
+- The forward-to-email and forward-to-calendar-URL features address this segment.
+
+---
+
+## 3. Family Model
+
+### Core Principle
+
+A family (tenant) is defined by a **WhatsApp group**. Any number of caregivers can be in the group. The bot participates as a group member. There are no defined roles — all caregivers have equal authority.
+
+### Rules
+
+- **Identification:** Each caregiver is identified by their WhatsApp phone number within the group.
+- **Authority:** All caregivers can issue instructions, approve actions, and claim tasks with equal authority.
+- **Concurrent input:** First response wins. If two caregivers reply near-simultaneously to a pending action, the first processed response executes. No consensus required.
+- **Conflict resolution:** If caregivers give contradictory instructions (not simultaneous — e.g., one says "RSVP yes" and later another says "RSVP no"), the bot surfaces the conflict to the group and does not act until resolved.
+- **Adding caregivers:** New members added to the WhatsApp group are automatically detected. The bot sends them a welcome message and OAuth link.
+- **Removing caregivers:** Members who leave the group have their OAuth tokens revoked. Their historical data remains in the family profile.
+
+---
+
+## 4. Data Sources and Ingestion
+
+### 4.1 Gmail Push Notifications (MVP)
+
+- **Mechanism:** Google Pub/Sub push notifications via Gmail API `watch()`.
+- **Trigger:** New email arrives in any connected caregiver's inbox.
+- **Payload:** Raw email headers, body, and attachment metadata.
+- **Renewal:** Watch channels expire every 7 days. Auto-renewal job runs on 5-day intervals (2-day buffer). Failed renewals trigger caregiver notification and fallback to polling.
+
+### 4.2 Google Calendar Webhooks (MVP)
+
+- **Mechanism:** GCal push notification channels via Calendar API.
+- **Trigger:** Any event create, update, or delete on connected calendars.
+- **Renewal:** Same 7-day expiry / 5-day renewal as Gmail.
+
+### 4.3 WhatsApp Business API (MVP)
+
+- **Provider:** Twilio or Meta Cloud API directly.
+- **Inbound:** Webhook receives all messages from the family group (text and voice).
+- **Outbound — Reactive:** Free-form messages within 24-hour conversation windows.
+- **Outbound — Proactive:** Requires pre-approved WhatsApp message templates.
+- **Voice notes:** Received as audio files, transcribed via Whisper API before processing.
+
+### 4.4 Forward-to Email Address (MVP)
+
+- **Mechanism:** Each family gets a unique inbound email address (e.g., `family-{id}@radar.app`).
+- **Use case:** Caregivers who don't want to grant email OAuth can forward relevant emails manually. Also useful for forwarding from accounts the bot can't directly access.
+- **Processing:** Forwarded emails enter the same extraction pipeline as Gmail push notifications.
+
+### 4.5 ICS Feed Subscription (MVP)
+
+- **Mechanism:** Family provides a URL to an .ics calendar feed (sports leagues, school calendars, activity providers).
+- **Polling:** System fetches the ICS feed periodically (every 30 minutes) and diffs against stored events.
+- **Also supports:** Caregivers forwarding .ics file attachments to the bot's email address or directly in WhatsApp.
+
+### 4.6 Work Calendar Free/Busy (Deferred)
+
+- **Mechanism:** Google Calendar FreeBusy API or Outlook equivalent.
+- **Purpose:** See caregiver availability windows without exposing meeting details.
+- **Status:** Deferred. Tracked in [Deferred Features](#19-deferred-features).
+
+### 4.7 SMS / iMessage (Deferred)
+
+- **Status:** Deferred to v2. Workaround: caregivers forward relevant texts to the WhatsApp group.
+
+---
+
+## 5. Data Models
+
+### 5.1 Family (Tenant)
+
+```
+Family {
+  id: uuid (primary key)
+  whatsapp_group_id: string (unique)
+  created_at: timestamp
+  onboarding_complete: boolean
+  forward_email: string (unique, e.g. "family-{id}@radar.app")
+  settings: {
+    daily_digest_time: time (default: 07:00 local)
+    weekly_summary_day: day (default: Sunday)
+    weekly_summary_time: time (default: 09:00 local)
+    timezone: string
+  }
+}
+```
+
+### 5.2 Caregiver
+
+```
+Caregiver {
+  id: uuid
+  family_id: uuid (FK → Family)
+  whatsapp_phone: string
+  name: string
+  google_account_email: string (nullable — not all caregivers connect Google)
+  google_refresh_token: encrypted_string (nullable)
+  google_token_expires_at: timestamp (nullable)
+  gmail_watch_expiry: timestamp (nullable)
+  gcal_watch_expiry: timestamp (nullable)
+  joined_at: timestamp
+  is_active: boolean
+}
+```
+
+### 5.3 Child
+
+```
+Child {
+  id: uuid
+  family_id: uuid (FK → Family)
+  name: string
+  age: integer (derived from date_of_birth)
+  date_of_birth: date (nullable)
+  school: string (nullable, learned)
+  grade: string (nullable, learned)
+  activities: [string] (learned, e.g. ["soccer", "piano", "swim"])
+  friends: [{name, parent_contact}] (learned)
+  gear_inventory: [{item, size, last_updated}] (learned)
+  notes: text (learned, freeform)
+}
+```
+
+### 5.4 Event
+
+```
+Event {
+  id: uuid
+  family_id: uuid (FK → Family)
+  source: enum (email | calendar | manual | ics_feed | forwarded)
+  source_refs: [string] (dedup: list of source IDs that mapped to this event)
+  type: enum (
+    birthday_party | sports_practice | sports_game | school_event |
+    camp | playdate | medical_appointment | dental_appointment |
+    recital_performance | registration_deadline | other
+  )
+  title: string
+  description: text (nullable)
+  children_involved: [uuid] (FK → Child)
+  datetime_start: timestamp
+  datetime_end: timestamp (nullable)
+  location: string (nullable)
+  location_coordinates: point (nullable)
+
+  # Recurrence
+  is_recurring: boolean (default false)
+  season_id: uuid (nullable, FK → Season)
+
+  # RSVP
+  rsvp_status: enum (pending | accepted | declined | not_applicable)
+  rsvp_deadline: timestamp (nullable)
+  rsvp_method: enum (reply_email | click_link | form | phone | not_applicable)
+  rsvp_contact: string (nullable)
+
+  # Preparation
+  prep_tasks: [{
+    task: string,
+    status: enum (pending | complete),
+    assigned_to: uuid (nullable, FK → Caregiver),
+    due_date: timestamp (nullable)
+  }]
+
+  # Transportation
+  transport: {
+    drop_off_by: uuid (nullable, FK → Caregiver),
+    pick_up_by: uuid (nullable, FK → Caregiver),
+    notes: string (nullable)
+  }
+
+  # Metadata
+  created_at: timestamp
+  updated_at: timestamp
+  extraction_confidence: float (0.0–1.0, from Email Extraction Agent)
+  confirmed_by_caregiver: boolean (default false)
+}
+```
+
+### 5.5 Season
+
+```
+Season {
+  id: uuid
+  family_id: uuid (FK → Family)
+  child_id: uuid (FK → Child)
+  activity_name: string (e.g. "soccer")
+  pattern: string (e.g. "every Tuesday and Thursday, 4:00–5:30pm")
+  location: string
+  start_date: date
+  end_date: date
+  confirmed: boolean (caregiver confirmed pattern detection)
+  transport_pattern: {
+    default_drop_off: uuid (nullable, FK → Caregiver),
+    default_pick_up: uuid (nullable, FK → Caregiver)
+  }
+  exceptions: [{
+    original_date: date,
+    type: enum (cancelled | rescheduled | location_change | makeup),
+    new_date: date (nullable),
+    new_location: string (nullable),
+    reason: string (nullable)
+  }]
+}
+```
+
+### 5.6 Action Item (non-event actionables extracted from emails)
+
+```
+ActionItem {
+  id: uuid
+  family_id: uuid (FK → Family)
+  event_id: uuid (nullable, FK → Event — if related to a specific event)
+  source: enum (email | manual | inferred)
+  source_ref: string (nullable)
+  type: enum (
+    form_to_sign | payment_due | item_to_bring | item_to_purchase |
+    registration_deadline | rsvp_needed | contact_needed | other
+  )
+  description: string
+  due_date: timestamp (nullable)
+  status: enum (pending | complete | dismissed)
+  assigned_to: uuid (nullable, FK → Caregiver)
+  children_involved: [uuid] (FK → Child)
+  created_at: timestamp
+  completed_at: timestamp (nullable)
+}
+```
+
+### 5.7 Conversation Memory
+
+```
+ConversationMemory {
+  id: uuid
+  family_id: uuid (FK → Family)
+  type: enum (short_term | long_term_summary)
+  content: text
+  embedding: vector (for semantic retrieval)
+  created_at: timestamp
+  expires_at: timestamp (nullable — short_term entries expire)
+}
+```
+
+### 5.8 Family Learning Entry
+
+```
+FamilyLearning {
+  id: uuid
+  family_id: uuid (FK → Family)
+  category: enum (child_school | child_activity | child_friend | contact |
+                   gear | preference | schedule_pattern | budget)
+  entity_type: enum (child | caregiver | external_contact)
+  entity_id: uuid (nullable)
+  fact: string (e.g. "Emma goes to Lincoln Elementary")
+  source: string (e.g. "Extracted from email — Lincoln Elementary Newsletter, March 12")
+  confidence: float (0.0–1.0)
+  confirmed: boolean (default false — set true after weekly summary review)
+  surfaced_in_summary: boolean (default false)
+  created_at: timestamp
+}
+```
+
+---
+
+## 6. Agent Specifications
+
+### 6.1 Email Extraction Agent
+
+**Purpose:** Convert raw email content into structured Event and ActionItem records.
+
+**Model strategy:**
+- **Tier 1 (Triage):** Claude Haiku. Binary classification: "Is this email relevant to family/kids activities?" ~80% of emails are irrelevant. Discard irrelevant emails immediately.
+- **Tier 2 (Extraction):** Claude Sonnet. For relevant emails, extract structured data into Event and ActionItem schemas.
+
+**Extraction scope (broader than just events):**
+- Events: parties, practices, games, school events, appointments, recitals, camps
+- Action items: forms to sign, payments due, items to bring, waivers, registration deadlines
+- Schedule changes: time changes, cancellations, location changes for existing events
+- Recurring patterns: season schedules embedded in emails
+- Child references: fuzzy match names against family's Child records
+- Contact information: other parents' names and contact info
+
+**Deduplication:** Before creating a new Event, query the Event Registry for fuzzy matches:
+- Match criteria: `datetime_start` within ±30 minutes AND title similarity > 0.7 (cosine similarity on embeddings or simple token overlap)
+- If match found: merge — email-extracted data enriches the existing record. Email is the richer source for prep, RSVP, and action item data.
+- If datetime conflicts between email and calendar source: flag to group, do not silently resolve.
+
+**Confidence scoring:** Each extraction includes a confidence score (0.0–1.0). Events below 0.6 confidence are surfaced with an explicit "Is this right?" prompt. Events above 0.6 are surfaced with implicit correction opportunity.
+
+**Feedback loop:** When a caregiver corrects an extraction (wrong date, wrong child, false positive), log the correction as a (raw_email, wrong_extraction, correct_extraction) triple for future model improvement.
+
+### 6.2 Calendar Change Detector
+
+**Purpose:** Process GCal webhook notifications, classify changes, and update the Event Registry.
+
+**Change classification:**
+- `new_event`: New event on any connected calendar → create Event, check for duplicates
+- `time_change`: Existing event rescheduled → update Event, check for new conflicts
+- `cancellation`: Event deleted → update Event status, if part of season log as exception
+- `location_change`: Location updated → update Event, notify group if transport implications
+- `attendee_change`: New attendees added → check if new child involved
+
+**Season awareness:** If a recurring event instance is modified or cancelled, update only that instance in the Season exceptions list. Do not modify the overall season pattern.
+
+**ICS feed processing:** Same change detection logic applied to diffed ICS feed data on each poll cycle.
+
+### 6.3 Intent Router (Orchestrator)
+
+**Purpose:** Classify inbound WhatsApp messages and route to the appropriate agent or action.
+
+**Intent categories:**
+
+| Intent | Example | Routes to |
+|--------|---------|-----------|
+| `query` | "What's on Saturday?" | Calendar Coordinator |
+| `schedule` | "Set up a playdate with Max" | Calendar Coordinator |
+| `prepare` | "What do we need for soccer?" | Logistics Planner |
+| `research` | "Find summer camps for Emma" | Research Agent |
+| `edit_instruction` | "Make it more casual" | Regenerate pending draft |
+| `approve` | "Send it", "yes", "looks good" | Execute pending action |
+| `assignment_claim` | "I'll take Jake" | Update transport assignment |
+| `update` | "Practice moved to 4pm" | Calendar Coordinator |
+| `correction` | "Actually that's next Saturday" | Update Event/ActionItem |
+| `dismiss` | "Skip", "not interested" | Dismiss pending suggestion |
+| `general` | "Thanks", "ok" | Acknowledge, no routing |
+
+**Open conversation state:** When a SUGGEST-mode action is pending approval, the router enters a "pending approval" state for that family. In this state:
+- Any reply is classified as `edit_instruction`, `approve`, or `dismiss`.
+- If ambiguous, the bot asks for clarification: "Want to change something, or should I send it?"
+- The state persists until the action is explicitly approved or dismissed.
+- Other intents (new queries, new events) can still be processed — pending approvals don't block the conversation.
+
+**Voice note handling:** Audio messages from WhatsApp are first sent to Whisper API for transcription, then the transcript is processed through the same intent classification pipeline as text messages.
+
+### 6.4 Calendar Coordinator Agent
+
+**Purpose:** All scheduling, conflict detection, and caregiver calendar synchronization.
+
+**Capabilities:**
+
+- **Event creation:** When a new event is confirmed, create GCal events on all connected caregivers' calendars. AUTO.
+- **Conflict detection:** Before adding any event, check all caregivers' calendars for overlapping time blocks. Surface conflicts to the group.
+- **Cross-child conflicts:** If two children have overlapping events at different locations, surface with transport implications: "Jake has soccer at 3pm and Emma has piano at 3:30pm — different locations. Who's taking whom?"
+- **Playdate scheduling:** Manages the flow: check family availability → suggest times → draft message to other parent (SUGGEST mode) → track response.
+- **Season management:** After season pattern is confirmed, auto-create individual Event instances for each occurrence.
+
+### 6.5 Logistics Planner Agent
+
+**Purpose:** Everything that needs to happen before and around events.
+
+**Capabilities:**
+
+- **Prep checklist generation:** Based on event type, auto-generate ActionItems:
+  - Birthday party → gift needed, RSVP, check if ride needed
+  - Sports season start → gear check (reference child's gear_inventory), registration forms
+  - School event → permission slips, payments, items to bring
+  - Camp → registration, medical forms, packing list
+- **Gear tracking:** Maintain gear_inventory on Child records. Surface gaps at season transitions: "Does Jake still have cleats that fit? He was size 3 last season."
+- **Transportation planning:** For recurring events (seasons), propose a standing transport schedule. For one-off events, surface assignment question to group.
+- **Assignment nudging:** If a transport assignment or task is unclaimed and the event is approaching, nudge the group again. Timing is context-aware (not a fixed timer): urgency scales with proximity to event.
+
+### 6.6 Research Agent
+
+**Purpose:** External information retrieval for camps, gifts, activities, venues.
+
+**Capabilities:**
+
+- **Gift recommendations:** Based on birthday child's age and family's learned budget range. Present 3 options via WhatsApp list message. "Other ideas" re-runs with different parameters.
+- **Camp/activity discovery:** Search for options matching child age, family location, target dates, budget. Ranked results with key details.
+- **Venue lookup:** Party venues, activity providers, sports facilities near the family's location.
+
+**All outputs are SUGGEST mode** — require caregiver approval before any action is taken.
+
+### 6.7 Reminder Engine
+
+**Purpose:** Scheduled notification system. Not an LLM agent — a cron-based evaluator that uses LLM for natural language generation of reminder messages.
+
+**Three notification types:**
+
+1. **Daily digest** — Evaluates the Event Registry and ActionItem list each morning.
+   - Fires ONLY when there's something actionable. Skips entirely on empty days.
+   - Content: today's events with prep status, approaching deadlines, unclaimed assignments.
+   - Delivered via WhatsApp template message.
+
+2. **Weekly Sunday summary** — Always fires, regardless of content.
+   - Content: week ahead overview, family learnings to review (from FamilyLearning entries where `surfaced_in_summary = false`), season schedule updates, prep status across upcoming events.
+   - Delivered via WhatsApp template message.
+
+3. **Immediate triggers** — Fire in real-time, regardless of digest schedule.
+   - New event detected with short RSVP window (< 48 hours to deadline)
+   - Scheduling conflict detected
+   - Unclaimed transport assignment with event approaching (context-aware timing)
+   - Season exception detected (practice cancelled, rescheduled)
+
+---
+
+## 7. Interaction Patterns
+
+All SUGGEST-mode actions use one of five interaction patterns. The bot uses **open conversation state** — any reply to a pending suggestion is classified as edit instruction, approval, or dismissal. No buttons.
+
+### 7.1 Type 1: Binary Approval
+
+**Use case:** Simple yes/no decisions with no content to review.
+**Examples:** Add event to calendar, confirm an extraction.
+
+```
+Bot: New invite: Sophia's 7th Birthday
+     📅 March 28, 2–4pm @ JumpZone
+     RSVP needed by March 25. Add to calendar?
+
+Caregiver: yes
+
+Bot: Done — added to all calendars ✓
+```
+
+### 7.2 Type 2: Content Approval
+
+**Use case:** Caregiver reviews a drafted message before it goes out.
+**Examples:** RSVP emails, playdate invites, coach messages.
+
+```
+Bot: Here's a draft RSVP to Sophia's mom:
+
+     "Hi! Emma would love to come to Sophia's party.
+      See you on the 28th! — Sarah"
+
+     Reply to edit, or say send to approve.
+
+Caregiver: make it warmer, add that she's excited
+
+Bot: Updated:
+     "Hi! Emma is SO excited for Sophia's party — she's
+      been counting down the days! See you on the 28th! — Sarah"
+
+Caregiver: send it
+
+Bot: Sent ✓
+```
+
+**Edit loop:** Can repeat as many times as needed. Ambiguous replies trigger clarification.
+
+### 7.3 Type 3: Options
+
+**Use case:** Caregiver picks from multiple choices.
+**Examples:** Gift suggestions, camp options, venue alternatives.
+
+```
+Bot: Gift ideas for Sophia (turning 7, ~$30–40):
+
+     1. Melissa & Doug art kit — $35
+     2. National Geographic science kit — $32
+     3. Creativity for Kids jewelry set — $28
+
+     Reply with a number, or say "more ideas"
+
+Caregiver: 2
+
+Bot: Added to prep checklist: National Geographic science kit
+     Amazon link: [link]
+```
+
+**"More ideas"** re-runs the Research Agent with different parameters.
+
+### 7.4 Type 4: Assignment
+
+**Use case:** Specific caregiver needs to claim a task.
+**Examples:** Transportation, purchasing, form submission.
+
+```
+Bot: Jake has soccer Saturday at 3pm (Westfield Fields)
+     and Emma has piano at 3:30pm downtown — same time,
+     different places.
+
+     Who's taking Jake? Who's taking Emma?
+
+Caregiver 1: I'll take Jake
+
+Caregiver 2: I got Emma
+
+Bot: Got it — Sarah: Jake's soccer. Mike: Emma's piano.
+     Added to both events ✓
+```
+
+**Nudge behavior:** If no one claims the task and the event is approaching, the bot sends a reminder to the whole group. Timing is context-aware (event in 4 hours = urgent nudge; event in 5 days = gentle reminder).
+
+### 7.5 Type 5: Deadline Urgency
+
+**Use case:** Time-sensitive action needed.
+**Examples:** Registration closing, RSVP expiring.
+
+```
+Bot: ⚠️ Camp Thunderbird registration closes tomorrow.
+
+     Emma: age 9 ✓  Dates: July 7–18 ✓  Cost: $450
+
+     Want the registration link? Or I can remind you
+     tomorrow morning.
+
+Caregiver: send me the link
+
+Bot: Here: [registration link]
+     I'll remind you at 9am if it's not done.
+```
+
+The bot does not fill out forms or handle payment. It surfaces the right link at the right moment and follows up.
+
+---
+
+## 8. Notification System
+
+### WhatsApp Template Messages (require pre-approval)
+
+Templates needed for proactive (bot-initiated) messages:
+
+| Template ID | Purpose | Variables |
+|-------------|---------|-----------|
+| `new_event` | New event detected | `{event_title}`, `{date}`, `{child_name}`, `{action_prompt}` |
+| `reminder` | Event reminder | `{event_title}`, `{timeframe}`, `{prep_note}` |
+| `deadline_alert` | Approaching deadline | `{action_description}`, `{deadline}` |
+| `approval_request` | Action needs approval | `{action_description}`, `{details}` |
+| `daily_digest` | Morning briefing | `{summary}` |
+| `weekly_summary` | Sunday overview | `{summary}` |
+| `assignment_nudge` | Unclaimed task | `{task_description}`, `{event_time}` |
+| `conflict_alert` | Schedule conflict | `{event_1}`, `{event_2}`, `{conflict_description}` |
+
+### 24-Hour Window Rule
+
+Once any caregiver responds to a bot message, a 24-hour free-form conversation window opens. Design flows to start with a template (triggering the window), then continue with natural conversation within the window.
+
+---
+
+## 9. Onboarding
+
+### Flow
+
+Fully conversational. Web UI exists only for Google OAuth token exchange.
+
+**Step 1: Bot added to group**
+```
+Bot: 👋 Hi! I'm Radar, your family's activity assistant.
+     Quick setup — what are your kids' names and ages?
+```
+
+**Step 2: Family profile initialized**
+```
+Caregiver: Emma, 9 and Jake, 7
+
+Bot: Got it — Emma (9) and Jake (7).
+     I'll send each person in this group a link to connect
+     your Google calendar and email. That's what lets me
+     spot events automatically.
+
+     Sarah: [OAuth link]
+     Mike: [OAuth link]
+
+     If you'd prefer not to connect your email, you can
+     also forward things to: family-abc123@radar.app
+```
+
+**Step 3: OAuth completion**
+```
+Bot: Both accounts connected ✓
+     I'll start picking up events from your inboxes.
+     Tell me anything else about the kids as we go —
+     I'll learn the rest over time.
+```
+
+### Requirements
+
+- Onboarding completes in 3 exchanges maximum.
+- OAuth link opens a minimal web page that handles the Google OAuth redirect and token storage. No other web UI features at MVP.
+- Caregivers who don't complete OAuth can still participate in the group and interact with the bot. They just don't contribute email/calendar data.
+- The family's forward-to email address is generated at tenant creation and communicated during onboarding.
+
+---
+
+## 10. Recurring Events and Seasons
+
+### Detection
+
+**From email:** If an email contains an explicit season schedule (e.g., "practice every Tuesday/Thursday, March 4 – May 22"), the Email Extraction Agent extracts the full pattern and creates a Season record.
+
+**From calendar:** If the Calendar Change Detector observes 3+ consecutive events with the same title, similar time, and same location, it infers a recurring pattern.
+
+### Confirmation
+
+In both cases, the bot confirms with the group before tracking as a season:
+
+```
+Bot: Looks like Jake has soccer practice every Tuesday and
+     Thursday, 4–5:30pm at Westfield Fields through May 22.
+     Should I track this as a season?
+
+Caregiver: yes
+
+Bot: Done — Jake's soccer season tracked through May 22.
+     I'll manage the schedule and let you know about
+     any changes.
+```
+
+### Exception Handling
+
+- **Cancellation:** Remove the instance, log exception. Report in next daily digest.
+- **Reschedule:** Update the instance datetime, log exception. Check for conflicts at new time.
+- **Location change:** Update the instance location. Notify group if transport implications.
+- **Makeup game/event:** Create a new Event instance linked to the season. Check for conflicts.
+
+Exceptions are handled silently (no confirmation needed) and reported in the next daily digest.
+
+### Season End
+
+When the last event in a season passes:
+```
+Bot: Jake's soccer season ended this week. Gear to return:
+     shin guards (borrowed from league). Want me to archive
+     the season?
+```
+
+---
+
+## 11. Family Profile Learning
+
+### Principle
+
+The bot continuously learns about the family from processed emails, calendar events, and conversations. Learnings are stored silently and surfaced for correction in the weekly Sunday summary.
+
+### What the Bot Learns
+
+- Child's school (from school email domains, newsletter headers)
+- Child's activities and teams (from registration emails, season schedules)
+- Child's friends (from playdate requests, party invites)
+- Other parents' contact info (from email metadata)
+- Coaches and teachers (from email senders)
+- Gear inventory (from purchase confirmations, "need new cleats" conversations)
+- Schedule patterns (Mom usually does Tuesday pickup, Dad does Thursday)
+- Budget norms (typical gift spending range, camp budget)
+
+### Learning Lifecycle
+
+1. **Detection:** Agent extracts a new fact from email, calendar, or conversation.
+2. **Storage:** Created as a `FamilyLearning` entry with `confirmed = false`.
+3. **Surface:** In the next weekly Sunday summary, unconfirmed learnings are presented:
+   ```
+   Bot: Here's what I learned this week:
+        - Emma goes to Lincoln Elementary (from school newsletter)
+        - Jake's friend Max — his mom is Lisa Chen, lisa.chen@gmail.com
+        - Sophia's birthday is March 28 (from party invite)
+
+        Anything wrong? Just let me know.
+   ```
+4. **Confirmation:** If no correction is received, `confirmed = true` after the following weekly summary cycle. If corrected, the entry is updated.
+
+### Correction Handling
+
+Caregivers can correct at any time, not just during the summary:
+```
+Caregiver: Actually Emma goes to Washington Elementary, not Lincoln
+
+Bot: Updated ✓ — Emma's school changed to Washington Elementary.
+```
+
+---
+
+## 12. Proactive Gap Detection
+
+### Purpose
+
+Go beyond reminders for existing events. Identify things the family should be doing but isn't — missing appointments, unscheduled activities, opportunities.
+
+### Detection Rules
+
+| Gap Type | Signal | Action |
+|----------|--------|--------|
+| Missed medical/dental | No dental appointment in 7+ months per child | Suggest scheduling |
+| Playdate drought | No playdate for a child in 3+ weeks | Suggest reaching out to recent contacts |
+| Upcoming school break | School break detected on calendar with no camp/activity scheduled | Surface camp discovery options |
+| Season registration | Known activity season approaching (based on prior year data) | Alert about registration windows |
+| Stale RSVP | Event RSVP status is `pending` and deadline is within 48 hours | Urgent reminder |
+| Uncompleted prep | Event has pending prep tasks within 48 hours of event | Escalated reminder with checklist status |
+| Birthday approaching | Child's friend birthday within 2 weeks, no party invite received | "Has [friend] mentioned a birthday party? Want me to check?" |
+
+### Implementation
+
+The gap detection engine runs as part of the Reminder Engine's daily evaluation job. It queries the Event Registry, ActionItem list, Family Profiles, and Season records to identify gaps, then generates natural-language messages surfaced through appropriate notification channels.
+
+All gap detection outputs are SUGGEST mode — they present options and ask, never auto-act.
+
+---
+
+## 13. Autonomy Matrix
+
+| Action | Mode | Notes |
+|--------|------|-------|
+| Create/modify/delete calendar events | AUTO | On all connected caregiver calendars |
+| Send WhatsApp messages to family group | AUTO | Reminders, digests, suggestions |
+| Update Event Registry | AUTO | From extraction pipeline |
+| Update Family Profiles | AUTO | Silent learning, weekly summary for review |
+| Track season schedules and exceptions | AUTO | After initial confirmation |
+| Nudge group for unclaimed tasks | AUTO | Context-aware timing |
+| Generate and update prep checklists | AUTO | Based on event type |
+| Send emails to external parties | SUGGEST | Draft shown, caregiver approves |
+| RSVP to invitations | SUGGEST | Draft shown, caregiver approves |
+| Gift/equipment purchase links | SUGGEST | Options shown, caregiver selects |
+| Camp/activity registrations | SUGGEST | Link shown, caregiver completes |
+| Playdate coordination messages | SUGGEST | Draft shown, caregiver approves |
+| Gap detection suggestions | SUGGEST | Presented as optional recommendations |
+
+---
+
+## 14. Multi-Tenancy
+
+### Tenant Isolation
+
+- **Tenant = Family = WhatsApp group.**
+- **Database:** Row-level security in PostgreSQL. Every query filters by `family_id`. No cross-tenant data access under any circumstance.
+- **Agent prompts:** Include only the current family's context. Never include data from other tenants in any LLM prompt.
+- **API keys:** Per-tenant OAuth tokens stored encrypted. No shared credentials between tenants.
+
+### OAuth Management
+
+- Each caregiver's Google refresh token is encrypted at rest (AES-256, key in GCP Secret Manager or equivalent).
+- Token refresh is handled automatically by the ingestion pipeline.
+- If a token expires or is revoked, the bot notifies that specific caregiver in the group with a re-auth link.
+- Token scope: Gmail read-only + Calendar read/write.
+
+### Scaling
+
+- Pub/Sub topics can be shared across tenants; messages include tenant ID for routing.
+- GCal/Gmail watch channels are per-caregiver, tracked in the Caregiver table.
+- WhatsApp webhook endpoint is shared; incoming messages are routed by group ID.
+
+---
+
+## 15. Security and Privacy
+
+### Data Handling
+
+- **Emails are processed ephemerally.** Extract structured data (Event, ActionItem, FamilyLearning), then discard raw email content. Never store full email bodies in the database.
+- **Forward-to emails:** Same ephemeral processing. Raw email stored only in a processing queue with a 1-hour TTL.
+- **Voice notes:** Transcribed, then audio deleted. Transcript processed as text and subject to same retention as conversation memory.
+
+### Caregiver Controls
+
+- `"Forget this"` command: Deletes a specific Event, ActionItem, or FamilyLearning entry and its source reference.
+- `"What do you know about [child]?"` command: Bot surfaces all stored data about a child from Family Profiles, learned facts, and gear inventory.
+- `"Pause"` command: Temporarily stops email/calendar processing. Bot remains in the group but only responds to direct messages.
+- `"Delete our data"` command: Full tenant data deletion. Irreversible. Requires confirmation from the caregiver who initiated onboarding.
+
+### Compliance Target
+
+- SOC 2 Type II from launch if pursuing enterprise/school partnerships.
+- COPPA considerations: the system processes data about children. No direct interaction with children. All data is managed by caregivers.
+
+---
+
+## 16. Technical Stack
+
+| Component | Choice | Notes |
+|-----------|--------|-------|
+| Runtime | Python + FastAPI (async) | Best LLM ecosystem; async for webhook concurrency |
+| Agent framework | LangGraph or Claude Agent SDK | Stateful multi-agent orchestration |
+| LLM — triage | Claude Haiku | Email relevance classification |
+| LLM — reasoning | Claude Sonnet | Extraction, drafting, intent routing, gap detection |
+| Database | PostgreSQL + pgvector | Relational for events/profiles; pgvector for conversation memory |
+| Message queue | Google Pub/Sub | Native Gmail push integration; fan-out across tenants |
+| WhatsApp | Twilio or Meta Cloud API | Template management, webhook delivery |
+| Voice transcription | Whisper API | WhatsApp voice note → text |
+| Hosting | GCP Cloud Run | Serverless, auto-scales, Pub/Sub native |
+| Scheduling | Cloud Scheduler → Pub/Sub | Daily digest, weekly summary, watch renewals |
+| Auth | Google OAuth 2.0 | Per-caregiver, encrypted token storage |
+| Encryption | AES-256 + GCP Secret Manager | OAuth tokens at rest |
+| Web UI | Minimal (OAuth redirect only) | Single-page, no framework needed |
+
+---
+
+## 17. Build Phases
+
+### Phase 1 — Calendar + Conversational Input (4–6 weeks)
+
+**Goal:** Validate that caregivers want to interact with a WhatsApp bot for family logistics.
+
+**Scope:**
+- WhatsApp group bot (basic Intent Router, Calendar Coordinator)
+- Google Calendar integration (webhooks, read/write)
+- Conversational onboarding
+- Event creation from conversation ("Add soccer practice Tuesday at 4pm")
+- Daily digest (when actionable) and weekly Sunday summary
+- Basic conflict detection
+- Forward-to email address (receive and store, basic extraction)
+
+**Not included:** Gmail push, full extraction pipeline, logistics planner, research agent, seasons, gap detection.
+
+### Phase 2 — Email Ingestion + Extraction (4–6 weeks)
+
+**Goal:** Validate that automatic email → structured events saves meaningful time.
+
+**Scope:**
+- Gmail push integration (Pub/Sub)
+- Email Extraction Agent (Haiku triage + Sonnet extraction)
+- ActionItem extraction (forms, payments, items to bring — not just events)
+- Event deduplication (email ↔ calendar)
+- ICS feed subscription
+- Voice note transcription
+- Extraction feedback loop (corrections logged)
+
+### Phase 3 — Logistics Intelligence (4–6 weeks)
+
+**Goal:** Differentiate from shared calendar apps. This is where Radar earns its name.
+
+**Scope:**
+- Logistics Planner Agent (prep checklists, gear tracking, transport coordination)
+- Research Agent (gift suggestions, camp discovery)
+- Season detection and management
+- Proactive gap detection
+- Family profile learning (silent + weekly summary)
+- Full suggest UX (all 5 interaction patterns)
+- Assignment nudging
+
+### Phase 4 — Growth Features (timeline TBD)
+
+- Playdate network effects (two-sided scheduling when both families use Radar)
+- Crowdsourced carpooling
+- Work calendar free/busy overlay
+- SMS/iMessage ingestion
+- Budget tracking for kid activities
+- Broader home management (bills, maintenance, errands) — deferred, tracked separately
+- Mobile companion app (optional, WhatsApp remains primary)
+
+---
+
+## 18. Decision Log
+
+All major decisions made during the design process:
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Product type | Multi-tenant SaaS | Building for many families, not personal use |
+| Interface | WhatsApp Business API | Where parents already are; group chat model fits naturally |
+| Data sources (MVP) | Gmail push + GCal webhooks + forward-to email + ICS feeds | Real-time for connected accounts; forward path for privacy-cautious users |
+| Autonomy model | Auto internal, suggest external | Internal actions are low-risk; external actions need human judgment |
+| Family model | WhatsApp group = tenant, N caregivers, no roles | Neutral on family structure; group dynamics handle coordination naturally |
+| Concurrent input | First response wins | Trusted group; speed matters more than consensus |
+| Suggest UX | Open conversation state | More natural than buttons; LLM handles edit/approve classification |
+| Onboarding | Conversational, 3 exchanges | Low friction; web UI only for OAuth |
+| Family learning | Silent storage, weekly summary for correction | Keeps bot helpful without feeling intrusive |
+| Recurring events | Confirm pattern once, then manage autonomously | One-time setup cost; ongoing benefit |
+| Notifications | Daily when actionable + weekly always + immediate for urgent | High signal-to-noise ratio by default |
+| OpenClaw | Architecture inspiration only, don't build on it | Single-user design is a dealbreaker for multi-tenant SaaS; security concerns |
+| Work calendar | Deferred | Valuable but complex; free/busy API adds privacy concerns |
+| SMS ingestion | Deferred to v2 | Programmatically hard; forward-to-WhatsApp workaround for now |
+| Home management | Deferred | Focus on kids' activities first; same patterns apply later |
+| Reinforcement learning | Prompt enrichment now, aggregate preference learning at scale, fine-tuning at 12–18 months | Per-family RL has cold-start problem; rich context in prompts achieves 80% of personalization value |
+
+---
+
+## 19. Deferred Features
+
+Tracked for future consideration. Not in any current phase.
+
+| Feature | Notes | Priority |
+|---------|-------|----------|
+| Work calendar free/busy overlay | Google FreeBusy API. Solves the #1 conflict detection gap. | High — Phase 4 candidate |
+| SMS/iMessage ingestion | Requires device-level access or carrier integration. Workaround: forward to WhatsApp. | Medium |
+| Broader home management | Bills, maintenance, errands. Same agent architecture applies. | Medium |
+| Crowdsourced carpooling | Network effect feature. Requires critical mass of users in same area. | Low |
+| Playdate network effects | Two-sided scheduling when both families use Radar. | Medium |
+| Budget tracking | Track spending on activities, gifts, camps per child. | Low |
+| Mobile companion app | Optional. WhatsApp remains primary interface. | Low |
+| Kid-facing interface | Let older kids (13+) see their own schedule. Privacy implications. | Low |
+| School/league partnerships | Direct integration with school admin systems, TeamSnap, etc. | Medium — depends on traction |
