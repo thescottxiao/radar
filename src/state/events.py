@@ -1,0 +1,200 @@
+from datetime import datetime, timedelta
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.state.models import (
+    ActionItem,
+    ActionItemStatus,
+    Event,
+    EventChild,
+    RsvpStatus,
+)
+
+
+async def create_event(session: AsyncSession, family_id: UUID, **kwargs) -> Event:
+    event = Event(family_id=family_id, **kwargs)
+    session.add(event)
+    await session.flush()
+    return event
+
+
+async def get_event(session: AsyncSession, family_id: UUID, event_id: UUID) -> Event | None:
+    result = await session.execute(
+        select(Event).where(Event.family_id == family_id, Event.id == event_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_events_in_range(
+    session: AsyncSession,
+    family_id: UUID,
+    start: datetime,
+    end: datetime,
+) -> list[Event]:
+    result = await session.execute(
+        select(Event)
+        .where(
+            Event.family_id == family_id,
+            Event.datetime_start >= start,
+            Event.datetime_start < end,
+        )
+        .order_by(Event.datetime_start)
+    )
+    return list(result.scalars().all())
+
+
+async def get_upcoming_events(
+    session: AsyncSession, family_id: UUID, days: int = 7
+) -> list[Event]:
+    now = datetime.now().astimezone()
+    end = now + timedelta(days=days)
+    return await get_events_in_range(session, family_id, now, end)
+
+
+async def get_events_needing_rsvp(
+    session: AsyncSession, family_id: UUID
+) -> list[Event]:
+    result = await session.execute(
+        select(Event).where(
+            Event.family_id == family_id,
+            Event.rsvp_status == RsvpStatus.pending,
+            Event.rsvp_deadline.is_not(None),
+        ).order_by(Event.rsvp_deadline)
+    )
+    return list(result.scalars().all())
+
+
+async def find_duplicate_event(
+    session: AsyncSession,
+    family_id: UUID,
+    title: str,
+    datetime_start: datetime,
+    threshold_minutes: int = 30,
+    title_similarity_threshold: float = 0.7,
+) -> Event | None:
+    """Find a potential duplicate event based on datetime proximity and title similarity.
+
+    Uses ±threshold_minutes for datetime and token overlap for title similarity.
+    """
+    window_start = datetime_start - timedelta(minutes=threshold_minutes)
+    window_end = datetime_start + timedelta(minutes=threshold_minutes)
+
+    result = await session.execute(
+        select(Event).where(
+            Event.family_id == family_id,
+            Event.datetime_start >= window_start,
+            Event.datetime_start <= window_end,
+        )
+    )
+    candidates = result.scalars().all()
+
+    for candidate in candidates:
+        similarity = compute_title_similarity(title, candidate.title)
+        if similarity >= title_similarity_threshold:
+            return candidate
+
+    return None
+
+
+def compute_title_similarity(a: str, b: str) -> float:
+    """Compute title similarity using token overlap (Jaccard-like).
+
+    Normalizes, tokenizes, and computes overlap ratio.
+    """
+    tokens_a = _tokenize(a)
+    tokens_b = _tokenize(b)
+
+    if not tokens_a and not tokens_b:
+        return 1.0
+    if not tokens_a or not tokens_b:
+        return 0.0
+
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union)
+
+
+def _tokenize(text: str) -> set[str]:
+    """Normalize and tokenize a title for comparison."""
+    import re
+
+    text = text.lower().strip()
+    # Remove common noise words
+    text = re.sub(r"[^\w\s]", " ", text)
+    tokens = set(text.split())
+    # Remove very short tokens
+    tokens = {t for t in tokens if len(t) > 1}
+    return tokens
+
+
+async def update_event(
+    session: AsyncSession, family_id: UUID, event_id: UUID, **kwargs
+) -> Event:
+    event = await get_event(session, family_id, event_id)
+    if event is None:
+        raise ValueError(f"Event {event_id} not found for family {family_id}")
+    for key, value in kwargs.items():
+        setattr(event, key, value)
+    await session.flush()
+    return event
+
+
+async def link_children_to_event(
+    session: AsyncSession, family_id: UUID, event_id: UUID, child_ids: list[UUID]
+) -> None:
+    for child_id in child_ids:
+        link = EventChild(event_id=event_id, child_id=child_id, family_id=family_id)
+        session.add(link)
+    await session.flush()
+
+
+async def get_events_by_source_ref(
+    session: AsyncSession, family_id: UUID, source_ref: str
+) -> list[Event]:
+    result = await session.execute(
+        select(Event).where(
+            Event.family_id == family_id,
+            Event.source_refs.any(source_ref),
+        )
+    )
+    return list(result.scalars().all())
+
+
+# ── Action items ────────────────────────────────────────────────────────
+
+
+async def create_action_item(session: AsyncSession, family_id: UUID, **kwargs) -> ActionItem:
+    item = ActionItem(family_id=family_id, **kwargs)
+    session.add(item)
+    await session.flush()
+    return item
+
+
+async def get_pending_action_items(
+    session: AsyncSession, family_id: UUID
+) -> list[ActionItem]:
+    result = await session.execute(
+        select(ActionItem).where(
+            ActionItem.family_id == family_id,
+            ActionItem.status == ActionItemStatus.pending,
+        ).order_by(ActionItem.due_date.asc().nullslast())
+    )
+    return list(result.scalars().all())
+
+
+async def get_action_items_due_soon(
+    session: AsyncSession, family_id: UUID, within_hours: int = 48
+) -> list[ActionItem]:
+    now = datetime.now().astimezone()
+    cutoff = now + timedelta(hours=within_hours)
+    result = await session.execute(
+        select(ActionItem).where(
+            ActionItem.family_id == family_id,
+            ActionItem.status == ActionItemStatus.pending,
+            ActionItem.due_date.is_not(None),
+            ActionItem.due_date <= cutoff,
+        ).order_by(ActionItem.due_date)
+    )
+    return list(result.scalars().all())

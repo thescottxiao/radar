@@ -1,0 +1,39 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "WHATSAPP_BUSINESS_ACCOUNT_ID",
+      "changes": [
+        {
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15550001234",
+              "phone_number_id": "PHONE_NUMBER_ID"
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Sarah"
+                },
+                "wa_id": "15551234567"
+              }
+            ],
+            "messages": [
+              {
+                "from": "15551234567",
+                "id": "wamid.ABCdef123456",
+                "timestamp": "1711036800",
+                "text": {
+                  "body": "Emma has soccer practice tomorrow at 4pm at Westfield Park. Can Mike do pickup?"
+                },
+                "type": "text"
+              }
+            ]
+          },
+          "field": "messages"
+        }
+      ]
+    }
+  ]
+}

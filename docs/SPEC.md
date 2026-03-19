@@ -922,7 +922,6 @@ Radar sends external emails (RSVPs, playdate messages, coach emails) from **its 
 - ActionItem extraction (forms, payments, items to bring — not just events)
 - Event deduplication (email ↔ calendar)
 - ICS feed subscription
-- Voice note transcription
 - Extraction feedback loop (corrections logged)
 
 ### Phase 3 — Logistics Intelligence (4–6 weeks)
@@ -940,6 +939,8 @@ Radar sends external emails (RSVPs, playdate messages, coach emails) from **its 
 
 ### Phase 4 — Growth Features (timeline TBD)
 
+- Voice note transcription (Whisper API) — deferred from Phase 2; WhatsApp Business API doesn't provide transcripts natively
+- Third-party integrations (RSVP submission, form filling, registration, payment) — until then, Radar reminds but users act manually on external services
 - Playdate network effects (two-sided scheduling when both families use Radar)
 - Crowdsourced carpooling
 - Work calendar free/busy overlay
@@ -972,6 +973,8 @@ All major decisions made during the design process:
 | Work calendar | Deferred | Valuable but complex; free/busy API adds privacy concerns |
 | SMS ingestion | Deferred to v2 | Programmatically hard; forward-to-WhatsApp workaround for now |
 | Home management | Deferred | Focus on kids' activities first; same patterns apply later |
+| Voice note transcription | Deferred to Phase 4 | WhatsApp Business API doesn't provide transcripts; not critical for email ingestion validation in Phase 2 |
+| Third-party integrations | Deferred to Phase 4 | RSVPs, forms, registrations, payments — high complexity, each service is different. Phases 1–3 remind users of deadlines/actions; users act manually on external services. |
 | Reinforcement learning | Prompt enrichment now, aggregate preference learning at scale, fine-tuning at 12–18 months | Per-family RL has cold-start problem; rich context in prompts achieves 80% of personalization value |
 
 ---

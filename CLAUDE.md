@@ -117,7 +117,7 @@ src/
 
 1. **Bot-initiated messages require approved templates.** Free-form only within 24-hour windows.
 2. **Five template categories are pre-approved:** new_event, reminder, deadline_alert, approval_request, daily_digest, weekly_summary, assignment_nudge, conflict_alert.
-3. **Voice notes** are transcribed via Whisper API before entering the intent pipeline.
+3. **Voice notes** — transcription deferred to Phase 4. Voice messages are not supported until then.
 4. **First response wins** when multiple caregivers reply simultaneously.
 
 ### Testing
@@ -143,9 +143,9 @@ We are building in phases. Check which phase is current before working on featur
 - **Phase 3:** Logistics Intelligence (Logistics Planner, Research Agent, seasons, gap detection, full suggest UX)
 - **Phase 4:** Growth features (playdate networks, carpooling, work calendar overlay)
 
-**Current phase: Phase 1**
+**Current phase: Phase 1 + Phase 2 (implemented)**
 
-Only implement features scoped to the current phase unless explicitly told otherwise.
+Phase 1 and Phase 2 code is implemented. Phase 3+ features should not be built unless explicitly told otherwise.
 
 ## Common Pitfalls
 

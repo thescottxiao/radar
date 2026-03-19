@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "radar"
+version = "0.1.0"
+description = "WhatsApp-native AI assistant for family activity coordination"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[all]>=0.109.0",
+    "sqlalchemy[asyncio]>=2.0.25",
+    "asyncpg>=0.29.0",
+    "pgvector>=0.2.4",
+    "alembic>=1.13.0",
+    "anthropic>=0.40.0",
+    "google-api-python-client>=2.111.0",
+    "google-auth>=2.25.0",
+    "google-auth-oauthlib>=1.2.0",
+    "httpx>=0.26.0",
+    "cryptography>=41.0.0",
+    "pydantic-settings>=2.1.0",
+    "icalendar>=5.0.0",
+    "python-multipart>=0.0.6",
+    "PyJWT>=2.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "factory-boy>=3.3.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]

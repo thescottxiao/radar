@@ -1,0 +1,47 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Youth Soccer League//Schedule//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Spring Soccer U8 Wildcats
+BEGIN:VEVENT
+DTSTART:20260321T100000Z
+DTEND:20260321T113000Z
+DTSTAMP:20260301T120000Z
+UID:soccer-practice-20260321@youthsoccer.org
+SUMMARY:Soccer Practice - U8 Wildcats
+LOCATION:Westfield Park - Field 3
+DESCRIPTION:Regular Saturday practice. Bring shin guards and water bottle.
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20260322T140000Z
+DTEND:20260322T153000Z
+DTSTAMP:20260301T120000Z
+UID:soccer-game-20260322@youthsoccer.org
+SUMMARY:Game: Wildcats vs Thunder
+LOCATION:Riverside Fields - Field A
+DESCRIPTION:Home game. Players arrive 30 min early for warm-up. Wildcats wear blue jerseys.
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20260328T100000Z
+DTEND:20260328T113000Z
+DTSTAMP:20260301T120000Z
+UID:soccer-practice-20260328@youthsoccer.org
+SUMMARY:Soccer Practice - U8 Wildcats
+LOCATION:Westfield Park - Field 3
+DESCRIPTION:Regular Saturday practice. Bring shin guards and water bottle.
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20260329T130000Z
+DTEND:20260329T143000Z
+DTSTAMP:20260301T120000Z
+UID:soccer-game-20260329@youthsoccer.org
+SUMMARY:Game: Wildcats vs Eagles
+LOCATION:Oak Hill Complex - Field 2
+DESCRIPTION:Away game. Wildcats wear white jerseys.
+STATUS:CONFIRMED
+END:VEVENT
+END:VCALENDAR
