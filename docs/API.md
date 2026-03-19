@@ -2,7 +2,7 @@
 
 > Webhook endpoints, OAuth routes, and internal API surface.
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Base URL:** `https://api.radar.app` (production) / `http://localhost:8000` (local)
 
 ---
@@ -33,13 +33,37 @@ Receives inbound WhatsApp messages from Twilio/Meta Cloud API.
 }
 ```
 
+**Meta Cloud API payload (interactive button reply):**
+```json
+{
+  "entry": [{
+    "changes": [{
+      "value": {
+        "messages": [{
+          "from": "15551234567",
+          "type": "interactive",
+          "interactive": {
+            "type": "button_reply",
+            "button_reply": {
+              "id": "event_confirm:{pending_action_id}:yes",
+              "title": "Yes"
+            }
+          }
+        }]
+      }
+    }]
+  }]
+}
+```
+
 **Behavior:**
-1. Verify webhook signature.
+1. Verify webhook signature (skip if `WHATSAPP_WEBHOOK_SECRET` is unset for local dev).
 2. Look up family by `GroupId` → `whatsapp_group_id`.
 3. Look up caregiver by `From` phone number.
-4. If `NumMedia > 0` and media is audio → queue for Whisper transcription → then process as text.
-5. Queue message for Intent Router processing.
-6. Return `200 OK` immediately.
+4. If message type is `interactive` with `button_reply` → extract `button_reply.id` and pass to Intent Router for direct routing (no LLM classification, confidence=1.0).
+5. If `NumMedia > 0` and media is audio → queue for Whisper transcription → then process as text.
+6. Queue message for Intent Router processing.
+7. Return `200 OK` immediately.
 
 **Response:** `200 OK` (empty body)
 
@@ -83,12 +107,17 @@ Receives Gmail push notifications via Google Pub/Sub.
 ```
 
 **Behavior:**
-1. Decode Pub/Sub message.
+1. Decode Pub/Sub message (base64 → JSON with `emailAddress` and `historyId`).
 2. Look up caregiver by `emailAddress`.
-3. Fetch new messages since last `historyId` via Gmail API.
-4. Queue each new message for Email Extraction Agent.
-5. Update stored `historyId` for this caregiver.
-6. Return `200 OK` immediately.
+3. Refresh access token using stored encrypted refresh token.
+4. Fetch new message IDs since last `historyId` via Gmail History API (filters: `messageAdded`, `INBOX` label, excludes `SPAM`/`TRASH`).
+5. For each new message:
+   a. Fetch full message content via Gmail API.
+   b. Run through Email Extraction Agent (Haiku triage → Sonnet extraction).
+   c. Auto-persist action items and learnings (AUTO mode).
+   d. For each extracted event: create `PendingAction` (type: `event_confirmation`) and send WhatsApp interactive button message (Yes/No) to all caregivers in the family.
+6. Update stored `historyId` for this caregiver.
+7. Return `200 OK` immediately.
 
 **Response:** `200 OK` (empty body). Must respond within 10 seconds or Pub/Sub retries.
 
@@ -104,11 +133,12 @@ Receives Google Calendar push notifications.
 - `X-Goog-Resource-State`: `sync` | `exists` | `not_exists`
 
 **Behavior:**
-1. Look up caregiver by channel ID.
-2. If `Resource-State` is `sync` → initial sync, acknowledge and return.
-3. Fetch changed events via Calendar API `events.list` with `syncToken`.
-4. Queue each changed event for Calendar Change Detector.
-5. Return `200 OK` immediately.
+1. Look up caregiver by `X-Goog-Channel-ID` → `gcal_watch_channel_id`.
+2. If `Resource-State` is `sync` → initial sync handshake, acknowledge and return.
+3. Fetch changed events via Calendar API `events.list` with stored `syncToken` (incremental sync). On 410 Gone, reset sync token and do full sync.
+4. For each changed event: notify all caregivers in the family via WhatsApp with event summary.
+5. Update stored `syncToken` for the next incremental sync.
+6. Return `200 OK` immediately.
 
 **Response:** `200 OK` (empty body)
 
@@ -166,13 +196,13 @@ Handles Google OAuth redirect.
 - `state`: maps to family_id + caregiver_phone
 
 **Behavior:**
-1. Exchange code for tokens.
+1. Exchange code for tokens (PKCE code_verifier flow).
 2. Encrypt refresh token (AES-256).
-3. Store tokens in Caregiver record.
-4. Set up Gmail watch channel (Pub/Sub) for this caregiver.
-5. Set up GCal watch channels for all calendars.
-6. Send WhatsApp confirmation to the family group: "[Caregiver name] connected ✓"
-7. Redirect to a simple success page.
+3. Store tokens and Google account email in Caregiver record.
+4. Set up GCal push notification watch channel for the caregiver's primary calendar (requires `WEBHOOK_BASE_URL`). Stores channel ID and expiry on the caregiver record.
+5. Set up Gmail Pub/Sub watch on the caregiver's inbox (requires `GMAIL_PUBSUB_TOPIC`). Stores historyId and expiry on the caregiver record.
+6. Send WhatsApp confirmation to the caregiver: "[Name] connected Google account successfully. Calendar and email sync is now active."
+7. Redirect to a success HTML page (can be closed; return to WhatsApp).
 
 ---
 

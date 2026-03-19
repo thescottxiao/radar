@@ -80,6 +80,32 @@ async def google_oauth_callback(
     try:
         caregiver = await handle_callback(session, code, state)
 
+        # Set up GCal watch for push notifications
+        try:
+            from src.actions.gcal import setup_gcal_watch
+
+            await setup_gcal_watch(session, caregiver)
+            logger.info("GCal watch created for caregiver %s", caregiver.id)
+        except Exception:
+            logger.warning(
+                "Could not set up GCal watch for caregiver %s (WEBHOOK_BASE_URL may not be set)",
+                caregiver.id,
+                exc_info=True,
+            )
+
+        # Set up Gmail watch for push notifications
+        try:
+            from src.ingestion.gmail import setup_gmail_watch
+
+            await setup_gmail_watch(session, caregiver)
+            logger.info("Gmail watch created for caregiver %s", caregiver.id)
+        except Exception:
+            logger.warning(
+                "Could not set up Gmail watch for caregiver %s (GMAIL_PUBSUB_TOPIC may not be set)",
+                caregiver.id,
+                exc_info=True,
+            )
+
         # Send WhatsApp confirmation to the caregiver
         display_name = caregiver.name or caregiver.google_account_email or "Caregiver"
         try:
@@ -96,12 +122,9 @@ async def google_oauth_callback(
 
         return HTMLResponse(content=_SUCCESS_HTML, status_code=200)
 
-    except ValueError as exc:
-        logger.warning("OAuth callback error: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception:
-        logger.exception("OAuth callback failed")
+    except Exception as exc:
+        logger.exception("OAuth callback failed: %s", exc)
         raise HTTPException(
             status_code=500,
-            detail="Something went wrong connecting your Google account. Please try again.",
+            detail=f"OAuth error: {type(exc).__name__}: {exc}",
         )

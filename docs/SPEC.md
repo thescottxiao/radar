@@ -2,9 +2,9 @@
 
 > A WhatsApp-native AI assistant that helps busy parents coordinate their kids' activities.
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 **Last updated:** 2026-03-19
-**Status:** Pre-development
+**Status:** Phase 1 + Phase 2 implemented, live testing
 
 ---
 
@@ -84,6 +84,8 @@ Dual-income households with children ages 5–14 who are actively involved in ac
 ### Core Principle
 
 A family (tenant) is defined by a **WhatsApp group**. Any number of caregivers can be in the group. The bot participates as a group member. There are no defined roles — all caregivers have equal authority.
+
+> **Current limitation:** WhatsApp Business API bots cannot be added to group chats. The bot currently communicates 1:1 with each caregiver. Group-chat support is a future consideration (see Decision Log). All notification and confirmation flows work in 1:1 mode — messages are sent to all caregivers in the family individually.
 
 ### Rules
 
@@ -349,8 +351,8 @@ FamilyLearning {
 **Purpose:** Convert raw email content into structured Event and ActionItem records.
 
 **Model strategy:**
-- **Tier 1 (Triage):** Claude Haiku. Binary classification: "Is this email relevant to family/kids activities?" ~80% of emails are irrelevant. Discard irrelevant emails immediately.
-- **Tier 2 (Extraction):** Claude Sonnet. For relevant emails, extract structured data into Event and ActionItem schemas.
+- **Tier 1 (Triage):** Claude Haiku. Binary classification: "Is this email relevant to any family member's activities, events, or scheduling?" Covers kids' activities, adult/parent events (dinner reservations, concerts, travel), and shared family logistics. ~80% of emails are irrelevant. Discard irrelevant emails immediately.
+- **Tier 2 (Extraction):** Claude Sonnet. For relevant emails, extract structured data into Event and ActionItem schemas. Extraction produces detailed descriptions including preparation checklists (using ☐ format) that can be tracked and updated later via conversation.
 
 **Extraction scope (broader than just events):**
 - Events: parties, practices, games, school events, appointments, recitals, camps
@@ -359,11 +361,14 @@ FamilyLearning {
 - Recurring patterns: recurring activity schedules embedded in emails
 - Child references: fuzzy match names against family's Child records
 - Contact information: other parents' names and contact info
+- Timezone inference: datetimes are extracted in ISO 8601 format with timezone offset, inferred from event location (e.g., Tempe AZ → America/Phoenix). Family timezone is used as fallback.
 
 **Deduplication:** Before creating a new Event, query the Event Registry for fuzzy matches:
 - Match criteria: `datetime_start` within ±30 minutes AND title similarity > 0.7 (cosine similarity on embeddings or simple token overlap)
 - If match found: merge — email-extracted data enriches the existing record. Email is the richer source for prep, RSVP, and action item data.
 - If datetime conflicts between email and calendar source: flag to group, do not silently resolve.
+
+**Event confirmation flow:** Extracted events are not auto-persisted. Instead, each event creates a `PendingAction` (type: `event_confirmation`) and sends a WhatsApp interactive button message with Yes/No buttons to the family group. The event is only created in the Event Registry when a caregiver confirms. Action items and learnings from the same email are still auto-persisted (AUTO mode).
 
 **Confidence scoring:** Each extraction includes a confidence score (0.0–1.0). Events below 0.6 confidence are surfaced with an explicit "Is this right?" prompt. Events above 0.6 are surfaced with implicit correction opportunity.
 
@@ -401,14 +406,26 @@ FamilyLearning {
 | `assignment_claim` | "I'll take Jake" | Update transport assignment |
 | `update` | "Practice moved to 4pm" | Calendar Coordinator |
 | `correction` | "Actually that's next Saturday" | Update Event/ActionItem |
+| `event_update` | "I already bought the wedding gift" | Match event from context/GCal, update description |
 | `dismiss` | "Skip", "not interested" | Dismiss pending suggestion |
 | `general` | "Thanks", "ok" | Acknowledge, no routing |
+
+**Button reply handling:** When a WhatsApp message contains a button reply (interactive message type `button_reply`), the router decodes the structured button ID (`{action_type}:{pending_action_id}:{response}`) and routes directly to the approval handler with confidence=1.0 — no LLM classification needed. This bypasses the keyword and LLM classification pipeline entirely.
 
 **Open conversation state:** When a SUGGEST-mode action is pending approval, the router enters a "pending approval" state for that family. In this state:
 - Any reply is classified as `edit_instruction`, `approve`, or `dismiss`.
 - If ambiguous, the bot asks for clarification: "Want to change something, or should I send it?"
 - The state persists until the action is explicitly approved or dismissed.
 - Other intents (new queries, new events) can still be processed — pending approvals don't block the conversation.
+
+**Conversation context:** The classifier receives the last 10 messages from conversation memory to understand follow-up messages. If a user just confirmed "Garden Party for the Newlyweds" and then says "I already bought a wedding gift," the classifier recognizes this as an `event_update` for the garden party.
+
+**Event update handling (two-tier context):** When an `event_update` intent is classified:
+1. **Tier 1 — Recent conversation:** Check the last 10 messages for context about which event the user means.
+2. **Tier 2 — GCal search:** If conversation context isn't sufficient, query Google Calendar for upcoming events (30-day window) and fuzzy-match the message against event titles and descriptions.
+3. The LLM matches the message to an event, determines the update (e.g., mark a prep checklist item as done: ☐ → ☑), pushes the updated description to GCal, and confirms to the user.
+
+**Schedule queries use GCal as source of truth:** When a user asks "what's on my schedule," the system queries Google Calendar directly (not the local Event Registry) to ensure manually-added events and external changes are included. Falls back to local DB if GCal is unavailable.
 
 **Voice note handling:** Audio messages from WhatsApp are first sent to Whisper API for transcription, then the transcript is processed through the same intent classification pipeline as text messages.
 
@@ -418,7 +435,7 @@ FamilyLearning {
 
 **Capabilities:**
 
-- **Event creation:** When a new event is confirmed, create GCal events on all connected caregivers' calendars. AUTO.
+- **Event creation:** When a new event is confirmed (via button tap or text reply), create the event in the local Event Registry AND write to Google Calendar on all connected caregivers' calendars. GCal is the source of truth. After confirmation, concise prep tips are sent to the caregiver based on the event description. AUTO.
 - **Conflict detection:** Before adding any event, check all caregivers' calendars for overlapping time blocks. Surface conflicts to the group.
 - **Cross-child conflicts:** If two children have overlapping events at different locations, surface with transport implications: "Jake has soccer at 3pm and Emma has piano at 3:30pm — different locations. Who's taking whom?"
 - **Playdate scheduling:** Manages the flow: check family availability → suggest times → draft message to other parent (SUGGEST mode) → track response.
@@ -476,22 +493,38 @@ FamilyLearning {
 
 ## 7. Interaction Patterns
 
-All SUGGEST-mode actions use one of five interaction patterns. The bot uses **open conversation state** — any reply to a pending suggestion is classified as edit instruction, approval, or dismissal. No buttons.
+All SUGGEST-mode actions use one of five interaction patterns. The bot uses **open conversation state** — any reply to a pending suggestion is classified as edit instruction, approval, or dismissal. For binary decisions (Type 1), WhatsApp interactive buttons are used. For all other patterns, text-based replies are used.
 
-### 7.1 Type 1: Binary Approval
+### 7.1 Type 1: Binary Approval (Interactive Buttons)
 
 **Use case:** Simple yes/no decisions with no content to review.
 **Examples:** Add event to calendar, confirm an extraction.
 
-```
-Bot: New invite: Sophia's 7th Birthday
-     📅 March 28, 2–4pm @ JumpZone
-     RSVP needed by March 25. Add to calendar?
+**Mechanism:** WhatsApp interactive button messages with Yes/No buttons. Button taps are routed directly via encoded button IDs (no LLM classification needed, confidence=1.0). Text replies ("yes"/"no") also work as a fallback and route through the standard intent classifier.
 
-Caregiver: yes
+**Button ID format:** `{action_type}:{pending_action_id}:{response}` — e.g., `event_confirm:a1b2c3d4-...:yes`
 
-Bot: Done — added to all calendars ✓
 ```
+Bot: [Interactive button message]
+     📬 New event from email:
+     *Sophia's 7th Birthday*
+     📅 Fri Mar 28, 02:00 PM
+     📍 JumpZone
+     [Yes] [No]
+
+Caregiver: [taps Yes]
+
+Bot: ✅ Added to your calendar: *Sophia's 7th Birthday*
+     Fri Mar 28, 02:00 PM
+     📍 JumpZone
+
+     *Heads up:*
+     • Purchase and wrap birthday gift ($30-40 range)
+     • RSVP to Sophia's mom by March 25
+     • Pack socks for JumpZone (required)
+```
+
+Each extracted event creates a `PendingAction` (type: `event_confirmation`) with the event data stored in the action's `context` field. The event is only persisted to the Event Registry AND Google Calendar when a caregiver taps Yes or replies "yes". After confirmation, concise prep tips are generated from the event description and sent to the caregiver.
 
 ### 7.2 Type 2: Content Approval
 
@@ -790,7 +823,8 @@ All gap detection outputs are SUGGEST mode — they present options and ask, nev
 |--------|------|-------|
 | Create/modify/delete calendar events | AUTO | On all connected caregiver calendars |
 | Send WhatsApp messages to family group | AUTO | Reminders, digests, suggestions |
-| Update Event Registry | AUTO | From extraction pipeline |
+| Update Event Registry (from calendar) | AUTO | Calendar webhooks and ICS feeds |
+| Update Event Registry (from email) | CONFIRM | Interactive Yes/No buttons; event created only on caregiver confirmation |
 | Update Family Profiles | AUTO | Silent learning, weekly summary for review |
 | Track recurring schedules and exceptions | AUTO | After initial confirmation |
 | Nudge group for unclaimed tasks | AUTO | Context-aware timing |
@@ -976,6 +1010,11 @@ All major decisions made during the design process:
 | Voice note transcription | Deferred to Phase 4 | WhatsApp Business API doesn't provide transcripts; not critical for email ingestion validation in Phase 2 |
 | Third-party integrations | Deferred to Phase 4 | RSVPs, forms, registrations, payments — high complexity, each service is different. Phases 1–3 remind users of deadlines/actions; users act manually on external services. |
 | Reinforcement learning | Prompt enrichment now, aggregate preference learning at scale, fine-tuning at 12–18 months | Per-family RL has cold-start problem; rich context in prompts achieves 80% of personalization value |
+| GCal as source of truth | Schedule queries read from GCal API, not local DB | GCal includes manually-added events and external changes; local DB may be stale. Local DB is fallback only. |
+| Email triage scope | All family member events, not just kids' activities | Adult events (dinner, concerts, travel) are equally important for family coordination |
+| Timezone inference | Infer from event location, family timezone as fallback | Avoids incorrect UTC assumptions for cross-timezone events (e.g., Tempe AZ event at 7AM MST should not become 4AM ET) |
+| Event update via conversation | Two-tier context: conversation history → GCal search | Enables natural follow-ups like "I already bought the gift" after confirming an event |
+| WhatsApp 1:1 only (current) | Bot communicates 1:1 with each caregiver | WhatsApp Business API cannot be added to group chats; group chat support is a future consideration |
 
 ---
 

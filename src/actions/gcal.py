@@ -33,20 +33,91 @@ def _event_to_gcal_body(event: Event) -> dict:
         body["location"] = event.location
 
     # Use dateTime format (not date) for timed events
+    # If the datetime has timezone info, use it; otherwise fall back to UTC
     start_dt = event.datetime_start
     body["start"]["dateTime"] = start_dt.isoformat()
-    body["start"]["timeZone"] = "UTC"
+    if start_dt.tzinfo is not None:
+        # Let Google infer from the offset in the ISO string
+        pass
+    else:
+        body["start"]["timeZone"] = "UTC"
 
     if event.datetime_end:
         body["end"]["dateTime"] = event.datetime_end.isoformat()
-        body["end"]["timeZone"] = "UTC"
+        if event.datetime_end.tzinfo is None:
+            body["end"]["timeZone"] = "UTC"
     else:
         # Default to 1-hour duration
         end_dt = start_dt + timedelta(hours=1)
         body["end"]["dateTime"] = end_dt.isoformat()
-        body["end"]["timeZone"] = "UTC"
+        if start_dt.tzinfo is None:
+            body["end"]["timeZone"] = "UTC"
 
     return body
+
+
+async def list_upcoming_events(
+    session: AsyncSession, family_id: UUID, days: int = 7
+) -> list[dict]:
+    """Query Google Calendar directly for upcoming events.
+
+    Returns a list of simplified event dicts from GCal (the source of truth).
+    Falls back to empty list if no caregiver has Google tokens.
+    """
+    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+
+    for caregiver in caregivers:
+        if caregiver.google_refresh_token_encrypted is None:
+            continue
+
+        try:
+            credentials = await get_google_credentials(session, caregiver.id)
+            service = get_calendar_service(credentials)
+
+            now = datetime.now(UTC)
+            time_max = now + timedelta(days=days)
+
+            result = (
+                service.events()
+                .list(
+                    calendarId="primary",
+                    timeMin=now.isoformat(),
+                    timeMax=time_max.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=50,
+                )
+                .execute()
+            )
+
+            events = []
+            for item in result.get("items", []):
+                start = item.get("start", {})
+                end = item.get("end", {})
+                events.append({
+                    "title": item.get("summary", "Untitled"),
+                    "start": start.get("dateTime") or start.get("date", ""),
+                    "end": end.get("dateTime") or end.get("date", ""),
+                    "location": item.get("location"),
+                    "description": item.get("description"),
+                    "gcal_id": item.get("id"),
+                })
+
+            logger.info(
+                "Fetched %d upcoming events from GCal for family %s",
+                len(events),
+                family_id,
+            )
+            return events
+
+        except Exception:
+            logger.exception(
+                "Failed to fetch GCal events for caregiver %s", caregiver.id
+            )
+            continue
+
+    logger.warning("No caregiver with Google tokens for family %s", family_id)
+    return []
 
 
 async def create_calendar_event(
@@ -200,7 +271,12 @@ async def setup_gcal_watch(
     )
 
     # Build webhook URL for GCal push notifications
-    webhook_url = settings.google_redirect_uri.rsplit("/auth/", 1)[0] + "/webhooks/gcal"
+    # Requires a public URL — Google won't call localhost
+    if not settings.webhook_base_url:
+        raise ValueError(
+            "WEBHOOK_BASE_URL must be set (e.g. your ngrok URL) for GCal push notifications"
+        )
+    webhook_url = settings.webhook_base_url.rstrip("/") + "/webhooks/gcal"
 
     watch_body = {
         "id": channel_id,

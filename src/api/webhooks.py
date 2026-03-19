@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
-@router.get("/whatsapp/verify")
+@router.get("/whatsapp")
 async def whatsapp_verify(
     request: Request,
 ) -> PlainTextResponse:
@@ -47,12 +47,13 @@ async def whatsapp_webhook(
     """
     body = await request.body()
 
-    # Verify webhook signature
+    # Verify webhook signature (skip if secret not configured — local dev)
     signature = request.headers.get("X-Hub-Signature-256", "")
-    if not verify_webhook_signature(body, signature):
+    if settings.whatsapp_webhook_secret and not verify_webhook_signature(body, signature):
         logger.warning("Invalid WhatsApp webhook signature")
-        # Still return 200 to avoid Meta retry storms, but log the issue
         return {"status": "ok"}
+    elif not settings.whatsapp_webhook_secret:
+        logger.debug("WHATSAPP_WEBHOOK_SECRET not set, skipping signature verification")
 
     payload = await request.json()
 
@@ -74,6 +75,9 @@ async def _process_whatsapp_message(payload: dict) -> None:
             async with session.begin():
                 response = await handle_whatsapp_message(session, payload)
 
+                logger.info("=" * 60)
+                logger.info("BOT RESPONSE: %s", response)
+                logger.info("=" * 60)
                 if response:
                     # Extract sender phone to reply
                     sender_phone = _extract_sender_phone(payload)
@@ -87,6 +91,78 @@ async def _process_whatsapp_message(payload: dict) -> None:
                             )
     except Exception:
         logger.exception("Failed to process WhatsApp message")
+
+
+@router.post("/gcal")
+async def gcal_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> PlainTextResponse:
+    """Receive Google Calendar push notifications.
+
+    Google sends POST requests when calendar events change. We must always
+    return 200 — non-2xx responses cause Google to back off and eventually
+    stop delivering notifications.
+    """
+    headers = dict(request.headers)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    channel_id = headers.get("x-goog-channel-id", "")
+    resource_state = headers.get("x-goog-resource-state", "")
+    logger.info(
+        "GCal webhook received: channel=%s, state=%s",
+        channel_id,
+        resource_state,
+    )
+
+    background_tasks.add_task(_process_gcal_notification, headers, body)
+    return PlainTextResponse("ok", status_code=200)
+
+
+async def _process_gcal_notification(headers: dict, body: dict) -> None:
+    """Process a GCal push notification in the background."""
+    from src.db import async_session_factory
+    from src.ingestion.gcal import handle_gcal_notification
+
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                await handle_gcal_notification(session, headers, body)
+    except Exception:
+        logger.exception("Failed to process GCal notification")
+
+
+@router.post("/gmail")
+async def gmail_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Receive Gmail Pub/Sub push notifications.
+
+    Google Pub/Sub sends POST with a base64-encoded message containing
+    the email address and historyId. Always return 200 to acknowledge.
+    """
+    payload = await request.json()
+    logger.info("Gmail Pub/Sub notification received")
+
+    background_tasks.add_task(_process_gmail_notification, payload)
+    return {"status": "ok"}
+
+
+async def _process_gmail_notification(payload: dict) -> None:
+    """Process a Gmail push notification in the background."""
+    from src.db import async_session_factory
+    from src.ingestion.gmail import handle_gmail_notification
+
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                await handle_gmail_notification(session, payload)
+    except Exception:
+        logger.exception("Failed to process Gmail notification")
 
 
 def _extract_sender_phone(payload: dict) -> str | None:

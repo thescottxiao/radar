@@ -77,6 +77,19 @@ async def get_caregiver_by_phone(
     return result.scalar_one_or_none()
 
 
+async def find_caregiver_by_phone(
+    session: AsyncSession, phone: str
+) -> Caregiver | None:
+    """Find a caregiver by phone across all families (for DM lookup)."""
+    result = await session.execute(
+        select(Caregiver).where(
+            Caregiver.whatsapp_phone == phone,
+            Caregiver.is_active.is_(True),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_caregiver_by_email(
     session: AsyncSession, email: str
 ) -> Caregiver | None:

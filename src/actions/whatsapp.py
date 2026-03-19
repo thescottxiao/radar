@@ -16,7 +16,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.state import families as families_dal
-from src.whatsapp_client import send_message, send_template
+from src.whatsapp_client import send_interactive_buttons, send_message, send_template
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,39 @@ async def send_to_family(
         except Exception:
             logger.exception(
                 "Failed to send message to caregiver %s (%s)",
+                caregiver.id,
+                caregiver.whatsapp_phone,
+            )
+
+
+async def send_buttons_to_family(
+    session: AsyncSession,
+    family_id: UUID,
+    body: str,
+    buttons: list[dict[str, str]],
+    header: str | None = None,
+    footer: str | None = None,
+) -> None:
+    """Send an interactive button message to all active caregivers in a family."""
+    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+    if not caregivers:
+        logger.warning("No active caregivers found for family %s", family_id)
+        return
+
+    for caregiver in caregivers:
+        try:
+            await send_interactive_buttons(
+                caregiver.whatsapp_phone, body, buttons,
+                header=header, footer=footer,
+            )
+            logger.info(
+                "Sent button message to caregiver %s (%s)",
+                caregiver.id,
+                caregiver.name or caregiver.whatsapp_phone,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send button message to caregiver %s (%s)",
                 caregiver.id,
                 caregiver.whatsapp_phone,
             )

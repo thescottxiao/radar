@@ -31,12 +31,18 @@ Intent categories:
 - rsvp_response: User is responding to an RSVP prompt (e.g. "Yes to the birthday party")
 - add_child_info: User is providing child info (e.g. "Jake's shoe size is 3")
 - approval_response: User is responding to a pending action — approve, dismiss, or edit instruction
+- event_update: User wants to update info about an existing event — mark a prep task done, add notes, change logistics (e.g. "I already bought the wedding gift", "I packed the swimsuit for camp")
 - general_question: A general question about the assistant or non-schedule topic
 - greeting: A greeting or small talk
 - unknown: Cannot determine intent
 
 IMPORTANT: If there is a pending action awaiting approval and the message looks like it could be
 a response to that action (approve, reject, edit, etc.), classify as approval_response.
+
+IMPORTANT: Consider recent conversation context when classifying. If the user references something
+just discussed (e.g. they just confirmed an event and now mention a related task), classify based
+on that context. For example, if they just confirmed "Garden Party for the Newlyweds" and then say
+"I already bought a wedding gift", that's an event_update for the garden party, not an unknown.
 
 Respond with a JSON object:
 {
@@ -59,12 +65,28 @@ async def classify_intent(
     family_id: UUID,
     message: str,
     sender_id: UUID,
+    button_reply_id: str | None = None,
 ) -> IntentResult:
     """Classify the intent of a WhatsApp message.
 
-    First checks for active pending actions (approval flow takes priority).
+    Button replies are routed directly via their encoded ID (no LLM needed).
+    Then checks for active pending actions (approval flow takes priority).
     Then uses Claude Haiku for general intent classification.
     """
+    # Button replies route directly — no LLM classification needed
+    if button_reply_id:
+        from src.utils.button_ids import decode_button_id
+
+        decoded = decode_button_id(button_reply_id)
+        if decoded:
+            action_map = {"yes": "approve", "no": "dismiss"}
+            return IntentResult(
+                intent=IntentType.approval_response,
+                confidence=1.0,
+                extracted_params={"action": action_map.get(decoded["response"], decoded["response"])},
+                pending_action_id=UUID(decoded["action_id"]),
+            )
+
     # Check for active pending actions first
     pending_actions = await pending_dal.get_active_pending(session, family_id)
 
@@ -75,7 +97,7 @@ async def classify_intent(
             return approval_intent
 
     # Build context for classification
-    recent_messages = await memory_dal.get_recent_messages(session, family_id, limit=5)
+    recent_messages = await memory_dal.get_recent_messages(session, family_id, limit=10)
     context_parts = []
     if pending_actions:
         context_parts.append(
@@ -83,7 +105,7 @@ async def classify_intent(
             f"Most recent: {pending_actions[0].draft_content[:100]}"
         )
     if recent_messages:
-        recent_texts = [m.content for m in reversed(recent_messages[-5:])]
+        recent_texts = [m.content for m in reversed(recent_messages[-10:])]
         context_parts.append("Recent conversation:\n" + "\n".join(recent_texts))
 
     context = "\n\n".join(context_parts) if context_parts else "No recent context."
@@ -205,6 +227,7 @@ async def route_intent(
         IntentType.rsvp_response: _handle_rsvp_response,
         IntentType.add_child_info: _handle_add_child_info,
         IntentType.approval_response: _handle_approval_response,
+        IntentType.event_update: _handle_event_update,
         IntentType.general_question: _handle_general_question,
         IntentType.greeting: _handle_greeting,
         IntentType.unknown: _handle_unknown,
@@ -297,7 +320,7 @@ async def _handle_query_schedule(
     message: str,
     sender_id: UUID,
 ) -> str:
-    """Handle query_schedule intent: look up upcoming events."""
+    """Handle query_schedule intent: query GCal (source of truth) with local DB fallback."""
     from src.llm import generate
 
     # Determine query range from params
@@ -307,21 +330,53 @@ async def _handle_query_schedule(
     except (ValueError, TypeError):
         days = 7
 
-    events = await events_dal.get_upcoming_events(session, family_id, days=days)
+    # Try Google Calendar first (source of truth)
+    event_lines = []
+    source = "gcal"
+    try:
+        from src.actions.gcal import list_upcoming_events
 
-    if not events:
+        gcal_events = await list_upcoming_events(session, family_id, days=days)
+        if gcal_events:
+            for ev in gcal_events:
+                start = ev.get("start", "")
+                # Parse ISO datetime or date string for display
+                try:
+                    from datetime import datetime as dt
+
+                    if "T" in start:
+                        dt_obj = dt.fromisoformat(start)
+                        dt_str = dt_obj.strftime("%a %b %d, %I:%M %p")
+                    else:
+                        dt_obj = dt.fromisoformat(start)
+                        dt_str = dt_obj.strftime("%a %b %d")
+                except (ValueError, TypeError):
+                    dt_str = start
+
+                line = f"- {ev['title']} — {dt_str}"
+                if ev.get("location"):
+                    line += f" @ {ev['location']}"
+                event_lines.append(line)
+    except Exception:
+        logger.warning("GCal query failed for family %s, falling back to local DB", family_id)
+        source = "local"
+
+    # Fallback to local DB if GCal returned nothing or failed
+    if not event_lines:
+        source = "local"
+        events = await events_dal.get_upcoming_events(session, family_id, days=days)
+        for ev in events:
+            dt_str = ev.datetime_start.strftime("%a %b %d, %I:%M %p")
+            line = f"- {ev.title} — {dt_str}"
+            if ev.location:
+                line += f" @ {ev.location}"
+            event_lines.append(line)
+
+    if not event_lines:
         return f"Nothing on the calendar for the next {days} days."
 
-    # Format events for display
-    event_lines = []
-    for ev in events:
-        dt_str = ev.datetime_start.strftime("%a %b %d, %I:%M %p")
-        line = f"- {ev.title} — {dt_str}"
-        if ev.location:
-            line += f" @ {ev.location}"
-        event_lines.append(line)
-
     event_list = "\n".join(event_lines)
+    logger.info("Schedule query for family %s: %d events from %s", family_id, len(event_lines), source)
 
     # Use LLM to generate a natural-language summary
     system = (
@@ -425,6 +480,15 @@ async def _handle_approval_response(
         return "I'm not sure which action you're responding to. Could you clarify?"
 
     if action_type == "approve":
+        # Check if this is an event confirmation — need to create the event
+        pending_action = await pending_dal.get_pending_action(
+            session, family_id, pending_action_id
+        )
+        if pending_action and pending_action.type.value == "event_confirmation":
+            response = await _create_event_from_pending(session, family_id, pending_action)
+        else:
+            response = "Approved! I'll take care of it."
+
         await pending_dal.resolve_pending(
             session,
             family_id=family_id,
@@ -432,7 +496,7 @@ async def _handle_approval_response(
             status=PendingActionStatus.approved,
             resolved_by=sender_id,
         )
-        return "Approved! I'll take care of it."
+        return response
 
     elif action_type == "dismiss":
         await pending_dal.resolve_pending(
@@ -442,6 +506,12 @@ async def _handle_approval_response(
             status=PendingActionStatus.dismissed,
             resolved_by=sender_id,
         )
+        # Check if this was an event confirmation for a friendlier message
+        pending_action = await pending_dal.get_pending_action(
+            session, family_id, pending_action_id
+        )
+        if pending_action and pending_action.type.value == "event_confirmation":
+            return "Got it, skipped."
         return "No problem, I've dismissed that."
 
     elif action_type == "edit_instruction":
@@ -480,6 +550,259 @@ async def _handle_approval_response(
             return "Sorry, I couldn't revise the draft. Please try again."
 
     return "I'm not sure what you'd like to do with that action. You can approve, dismiss, or suggest edits."
+
+
+async def _create_event_from_pending(
+    session: AsyncSession, family_id: UUID, pending_action
+) -> str:
+    """Create an event from a pending event_confirmation action's context."""
+    from datetime import datetime as dt
+
+    event_data = pending_action.context.get("event_data", {})
+    if not event_data:
+        return "Approved, but I couldn't find the event details. Something went wrong."
+
+    title = event_data.get("title", "Untitled Event")
+    datetime_start = event_data.get("datetime_start")
+    if datetime_start and isinstance(datetime_start, str):
+        datetime_start = dt.fromisoformat(datetime_start)
+
+    if not datetime_start:
+        return f"Approved \"{title}\", but no date/time was extracted. Please add it manually."
+
+    event_kwargs: dict = {
+        "title": title,
+        "source": "email",
+        "type": event_data.get("event_type", "other"),
+        "datetime_start": datetime_start,
+        "extraction_confidence": event_data.get("confidence", 0.8),
+        "confirmed_by_caregiver": True,
+    }
+
+    datetime_end = event_data.get("datetime_end")
+    if datetime_end and isinstance(datetime_end, str):
+        datetime_end = dt.fromisoformat(datetime_end)
+    if datetime_end:
+        event_kwargs["datetime_end"] = datetime_end
+    if event_data.get("location"):
+        event_kwargs["location"] = event_data["location"]
+    if event_data.get("description"):
+        event_kwargs["description"] = event_data["description"]
+
+    source_ref = pending_action.context.get("source_ref")
+    if source_ref:
+        event_kwargs["source_refs"] = [source_ref]
+
+    event = await events_dal.create_event(session, family_id, **event_kwargs)
+
+    # Write to Google Calendar (source of truth)
+    try:
+        from src.actions.gcal import create_calendar_event
+
+        gcal_ids = await create_calendar_event(session, family_id, event)
+        if gcal_ids:
+            logger.info("Created GCal event(s) %s for '%s'", gcal_ids, title)
+    except Exception:
+        logger.exception("Failed to create GCal event for '%s' — saved locally only", title)
+
+    dt_str = datetime_start.strftime("%a %b %d, %I:%M %p")
+    parts = [f"✅ Added to your calendar: *{title}*", f"{dt_str}"]
+    if event_data.get("location"):
+        parts.append(f"📍 {event_data['location']}")
+
+    # Generate concise prep tips from the description — only the important ones
+    description = event_data.get("description", "")
+    if description:
+        try:
+            from src.llm import generate
+
+            tip_prompt = f"""\
+Event: {title}
+Date: {dt_str}
+Location: {event_data.get('location', 'TBD')}
+Details: {description}
+
+List only the most important things to know or prepare before this event. Skip anything obvious or trivial. Each bullet should be short (max 10 words) and actionable. Use "•" prefix. No preamble."""
+            tips = await generate(tip_prompt, system="You are a concise family assistant. Return only bullet points, nothing else. Only include what actually matters.")
+            if tips and tips.strip():
+                parts.append("")
+                parts.append("*Heads up:*")
+                tip_lines = [line.strip() for line in tips.strip().split("\n") if line.strip().startswith("•")]
+                parts.extend(tip_lines)
+        except Exception:
+            logger.debug("Could not generate prep tips for '%s'", title)
+
+    return "\n".join(parts)
+
+
+async def _handle_event_update(
+    session: AsyncSession,
+    family_id: UUID,
+    intent: IntentResult,
+    message: str,
+    sender_id: UUID,
+) -> str:
+    """Handle event_update intent: update info about an existing event.
+
+    Two-tier context strategy:
+    1. Check recent conversation for context about which event the user means.
+    2. If not enough context, query GCal to fuzzy-match the message against event titles/descriptions.
+    """
+    from src.llm import generate
+
+    # Tier 1: Gather recent conversation context
+    recent_messages = await memory_dal.get_recent_messages(session, family_id, limit=10)
+    conversation_context = ""
+    if recent_messages:
+        recent_texts = [m.content for m in reversed(recent_messages[-10:])]
+        conversation_context = "\n".join(recent_texts)
+
+    # Tier 2: Fetch upcoming events from GCal for matching
+    gcal_context = ""
+    gcal_events: list[dict] = []
+    try:
+        from src.actions.gcal import list_upcoming_events
+
+        gcal_events = await list_upcoming_events(session, family_id, days=30)
+        if gcal_events:
+            event_summaries = []
+            for ev in gcal_events:
+                summary = f"- {ev['title']} ({ev.get('start', 'TBD')}) [gcal_id: {ev.get('gcal_id', 'unknown')}]"
+                if ev.get("description"):
+                    desc_preview = ev["description"][:500]
+                    summary += f"\n  Description: {desc_preview}"
+                if ev.get("location"):
+                    summary += f"\n  Location: {ev['location']}"
+                event_summaries.append(summary)
+            gcal_context = "\n".join(event_summaries)
+    except Exception:
+        logger.warning("Could not fetch GCal events for event_update context (family %s)", family_id)
+
+    # Also check local DB events as additional fallback
+    if not gcal_events:
+        try:
+            local_events = await events_dal.get_upcoming_events(session, family_id, days=30)
+            if local_events:
+                event_summaries = []
+                for ev in local_events:
+                    dt_str = ev.datetime_start.strftime("%a %b %d, %I:%M %p") if ev.datetime_start else "TBD"
+                    summary = f"- {ev.title} ({dt_str})"
+                    if ev.description:
+                        summary += f"\n  Description: {ev.description[:500]}"
+                    if ev.location:
+                        summary += f"\n  Location: {ev.location}"
+                    event_summaries.append(summary)
+                gcal_context = "\n".join(event_summaries)
+        except Exception:
+            logger.warning("Could not fetch local events for event_update context (family %s)", family_id)
+
+    if not conversation_context and not gcal_context:
+        return (
+            "I'd like to help update that event, but I'm not sure which one you mean. "
+            "Could you specify the event name?"
+        )
+
+    # Use LLM to match the message to an event and determine the update
+    system = """\
+You are Radar, a family calendar assistant. The user wants to update something about an existing event.
+
+Your job:
+1. Figure out which event they're referring to using conversation context and calendar events.
+2. Determine what update they want to make (e.g., mark a prep task done, add notes, change details).
+3. Return a JSON response with:
+   - "matched_event": the title of the event they're referring to (or null if you can't determine it)
+   - "gcal_id": the gcal_id of the matched event if available (or null)
+   - "update_description": a short description of the update (e.g., "Mark 'Purchase wedding gift' as done")
+   - "updated_description": if the event has a description with checklist items, return the full updated description with the relevant item checked off (☐ → ☑). If no checklist, return null.
+   - "confirmation_message": a friendly confirmation message to send back to the user
+
+Only output the JSON. No other text."""
+
+    prompt = f"""User message: {message}
+
+Recent conversation:
+{conversation_context if conversation_context else "(No recent conversation)"}
+
+Upcoming calendar events:
+{gcal_context if gcal_context else "(No events found)"}"""
+
+    try:
+        raw = await generate(prompt, system)
+        # Parse the JSON response
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+
+        data = json.loads(text)
+
+        matched_event = data.get("matched_event")
+        if not matched_event:
+            return (
+                "I couldn't figure out which event you're referring to. "
+                "Could you mention the event name?"
+            )
+
+        # If we have an updated description and a gcal_id, push the update to GCal
+        updated_description = data.get("updated_description")
+        gcal_id = data.get("gcal_id")
+
+        if updated_description and gcal_id:
+            try:
+                from src.actions.gcal import list_upcoming_events
+                from src.auth.google_client import get_calendar_service, get_google_credentials
+                from src.state import families as families_dal
+
+                caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+                for caregiver in caregivers:
+                    if caregiver.google_refresh_token_encrypted is None:
+                        continue
+                    try:
+                        credentials = await get_google_credentials(session, caregiver.id)
+                        service = get_calendar_service(credentials)
+                        service.events().patch(
+                            calendarId="primary",
+                            eventId=gcal_id,
+                            body={"description": updated_description},
+                        ).execute()
+                        logger.info(
+                            "Updated GCal event %s description for caregiver %s",
+                            gcal_id, caregiver.id,
+                        )
+                        break  # Only need to update on one calendar
+                    except Exception:
+                        logger.debug(
+                            "Could not update GCal event %s for caregiver %s",
+                            gcal_id, caregiver.id,
+                        )
+            except Exception:
+                logger.exception("Failed to push event update to GCal")
+
+        # Also update local DB event if it exists
+        try:
+            local_events = await events_dal.get_upcoming_events(session, family_id, days=30)
+            for ev in local_events:
+                if ev.title and matched_event.lower() in ev.title.lower():
+                    if updated_description:
+                        ev.description = updated_description
+                        await session.flush()
+                        logger.info("Updated local event '%s' description", ev.title)
+                    break
+        except Exception:
+            logger.debug("Could not update local event for '%s'", matched_event)
+
+        confirmation = data.get("confirmation_message", f"Updated *{matched_event}* ✓")
+        return confirmation
+
+    except json.JSONDecodeError:
+        logger.warning("Could not parse event_update LLM response: %s", raw[:200] if raw else "empty")
+        return (
+            "I understood you want to update an event, but I had trouble processing it. "
+            "Could you try again with more detail?"
+        )
+    except Exception:
+        logger.exception("Event update handler failed")
+        return "Sorry, I couldn't process that update. Please try again."
 
 
 async def _handle_general_question(

@@ -105,13 +105,16 @@ src/
 ### Agent Rules
 
 1. **Email Extraction Agent uses two-tier model strategy:**
-   - Haiku for triage (is this email relevant to family/kids?) — fast, cheap, ~80% rejection rate
-   - Sonnet for full extraction (only on relevant emails) — structured output matching Event/ActionItem schemas
-2. **Intent Router holds open conversation state** for pending approvals. Any reply to a pending SUGGEST action is classified as edit_instruction, approve, or dismiss. Not buttons.
+   - Haiku for triage (is this email relevant to any family member's activities, events, or scheduling — including adult/parent events?) — fast, cheap, ~80% rejection rate. Triage result is parsed with `startswith("RELEVANT")` to handle LLM explanations.
+   - Sonnet for full extraction (only on relevant emails) — structured output matching Event/ActionItem schemas. Extractions include detailed descriptions with prep checklists (☐ format) and timezone-aware datetimes (inferred from location, family timezone as fallback).
+2. **Intent Router uses conversation context** (last 10 messages) for classification. Supports `event_update` intent for follow-up messages about recently confirmed events (e.g., "I already bought the wedding gift"). Uses two-tier matching: recent conversation → GCal search. Pending approvals are checked first — any reply to a pending SUGGEST action is classified as edit_instruction, approve, or dismiss.
 3. **All SUGGEST-mode actions require caregiver approval** before execution. The bot never sends external emails, RSVPs, or purchases autonomously. External emails are sent from Radar's own domain (not the caregiver's Gmail). A 10-second cancel window is shown after approval.
 4. **AUTO actions execute without approval** but are always logged and surfaced in digests.
 5. **Concurrent input on SUGGEST actions requires consensus.** If multiple caregivers respond with contradictory instructions to a pending external action, the bot pauses and surfaces the conflict. It does not execute until resolved.
 5. **Extraction confidence below 0.6** triggers explicit confirmation ("Is this right?"). Above 0.6 gets implicit correction opportunity.
+6. **Google Calendar is the source of truth for schedule queries.** `_handle_query_schedule` calls `list_upcoming_events()` from `src/actions/gcal.py` to query GCal directly. Falls back to local Event Registry if GCal is unavailable.
+7. **Confirmed events are written to both local DB and GCal.** When a caregiver confirms an event (button tap or text), the event is created in the Event Registry AND pushed to Google Calendar via `create_calendar_event()`.
+8. **Event updates push to GCal.** When a user says something like "I bought the gift," the `event_update` handler matches it to an event (via conversation context or GCal search), updates the description (e.g., ☐ → ☑), and pushes the change to GCal via `events().patch()`.
 
 ### WhatsApp Rules
 
@@ -119,6 +122,7 @@ src/
 2. **Five template categories are pre-approved:** new_event, reminder, deadline_alert, approval_request, daily_digest, weekly_summary, assignment_nudge, conflict_alert.
 3. **Voice notes** — transcription deferred to Phase 4. Voice messages are not supported until then.
 4. **First response wins** when multiple caregivers reply simultaneously.
+5. **WhatsApp Business API is 1:1 only.** The bot cannot be added to group chats (current platform limitation). All messages are sent to individual caregivers. Notifications go to all caregivers in the family individually.
 
 ### Testing
 
@@ -155,3 +159,9 @@ Phase 1 and Phase 2 code is implemented. Phase 3+ features should not be built u
 - **Recurring schedule exceptions don't modify the overall pattern.** Only the individual instance is changed. "Recurring schedule" is the generalized term (not "season") — covers sports, music lessons, tutoring, swim, etc.
 - **Family learning entries start unconfirmed.** They become confirmed after being surfaced in a weekly summary with no correction.
 - **Every sent email must be logged** in the sent_emails audit table with full content, recipient, approving caregiver, and edit history.
+- **Email triage parsing is lenient.** Use `result.startswith("RELEVANT")`, not exact match — the LLM may append explanation text after the keyword.
+- **Timezone handling.** Never hardcode UTC. Extraction prompts instruct the LLM to infer timezone from event location. `_event_to_gcal_body()` passes timezone info from the datetime object to GCal. If no tzinfo, falls back to UTC.
+- **OAuth callback sets up both GCal and Gmail watches.** Both are in try/except blocks — if `WEBHOOK_BASE_URL` or `GMAIL_PUBSUB_TOPIC` aren't configured, the watches silently fail and can be retried later.
+- **GCal watch channels can be stale.** After re-OAuth, old channels may still send notifications with unknown channel IDs. These are logged as warnings and ignored. They expire naturally after 7 days.
+- **Meta test mode.** During development, phone numbers must be added to the Meta Developer Dashboard allowed list. WhatsApp sends to non-allowed numbers fail with "Recipient phone number not in allowed list."
+- **Gmail caregiver lookup must be unique.** Only one caregiver per family should have a given `google_account_email` to avoid `MultipleResultsFound` errors.

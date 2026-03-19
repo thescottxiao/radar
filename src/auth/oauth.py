@@ -34,7 +34,7 @@ def _get_signing_key() -> str:
     return key
 
 
-def _build_flow(state: str | None = None) -> Flow:
+def _build_flow() -> Flow:
     """Build a Google OAuth flow instance."""
     client_config = {
         "web": {
@@ -50,8 +50,6 @@ def _build_flow(state: str | None = None) -> Flow:
         scopes=SCOPES,
         redirect_uri=settings.google_redirect_uri,
     )
-    if state:
-        flow.code_verifier = None  # Not using PKCE for server-side flow
     return flow
 
 
@@ -59,33 +57,47 @@ def build_oauth_url(family_id: UUID, caregiver_phone: str) -> str:
     """Generate a Google OAuth consent URL.
 
     The state parameter is a JWT signed with token_encryption_key containing
-    {family_id, caregiver_phone, exp}.
+    {family_id, caregiver_phone, code_verifier, exp}.
+    The code_verifier is stored in state so the callback can complete the PKCE flow.
     """
-    signing_key = _get_signing_key()
-    state_payload = {
-        "family_id": str(family_id),
-        "caregiver_phone": caregiver_phone,
-        "exp": datetime.now(UTC) + timedelta(minutes=_STATE_EXPIRY_MINUTES),
-    }
-    state_token = jwt.encode(state_payload, signing_key, algorithm=_JWT_ALGORITHM)
-
-    flow = _build_flow(state=state_token)
+    flow = _build_flow()
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
-        state=state_token,
     )
+
+    # flow.authorization_url() auto-generates a PKCE code_verifier.
+    # Store it in the signed JWT state so the callback can use it.
+    signing_key = _get_signing_key()
+    state_payload = {
+        "family_id": str(family_id),
+        "caregiver_phone": caregiver_phone,
+        "code_verifier": flow.code_verifier,
+        "exp": datetime.now(UTC) + timedelta(minutes=_STATE_EXPIRY_MINUTES),
+    }
+    state_token = jwt.encode(state_payload, signing_key, algorithm=_JWT_ALGORITHM)
+
+    # Replace the auto-generated state in the URL with our JWT state
+    from urllib.parse import urlencode, urlparse, parse_qs
+
+    parsed = urlparse(authorization_url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params["state"] = [state_token]
+    new_query = urlencode({k: v[0] for k, v in params.items()})
+    authorization_url = parsed._replace(query=new_query).geturl()
+
     return authorization_url
 
 
 def decode_state(state_token: str) -> dict:
-    """Decode and verify the state JWT. Returns {family_id, caregiver_phone}."""
+    """Decode and verify the state JWT. Returns {family_id, caregiver_phone, code_verifier}."""
     signing_key = _get_signing_key()
     payload = jwt.decode(state_token, signing_key, algorithms=[_JWT_ALGORITHM])
     return {
         "family_id": UUID(payload["family_id"]),
         "caregiver_phone": payload["caregiver_phone"],
+        "code_verifier": payload.get("code_verifier"),
     }
 
 
@@ -96,10 +108,11 @@ async def handle_callback(
 
     Returns the updated Caregiver record.
     """
-    # Decode state to get family + caregiver info
+    # Decode state to get family + caregiver info + PKCE code_verifier
     state_data = decode_state(state)
     family_id: UUID = state_data["family_id"]
     caregiver_phone: str = state_data["caregiver_phone"]
+    code_verifier: str | None = state_data.get("code_verifier")
 
     # Look up or create caregiver
     caregiver = await families.get_caregiver_by_phone(session, family_id, caregiver_phone)
@@ -108,9 +121,15 @@ async def handle_callback(
             session, family_id, caregiver_phone
         )
 
-    # Exchange code for tokens
+    # Exchange code for tokens, using the same code_verifier from the auth request
     flow = _build_flow()
-    flow.fetch_token(code=code)
+    flow.code_verifier = code_verifier
+    logger.info("Exchanging auth code for tokens (token_uri: %s)", flow.client_config.get("token_uri"))
+    try:
+        flow.fetch_token(code=code)
+    except Exception as token_exc:
+        logger.exception("fetch_token failed: %s", token_exc)
+        raise
     credentials = flow.credentials
 
     if not credentials.refresh_token:

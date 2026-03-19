@@ -13,10 +13,12 @@ BASE_URL = "https://graph.facebook.com/v21.0"
 
 async def send_message(to_phone: str, body: str) -> dict:
     """Send a free-form text message (within 24-hour window)."""
+    # Meta API expects digits only, no + prefix
+    clean_phone = to_phone.lstrip("+")
     url = f"{BASE_URL}/{settings.whatsapp_phone_number_id}/messages"
     payload = {
         "messaging_product": "whatsapp",
-        "to": to_phone,
+        "to": clean_phone,
         "type": "text",
         "text": {"body": body},
     }
@@ -27,6 +29,8 @@ async def send_message(to_phone: str, body: str) -> dict:
             headers=_auth_headers(),
             timeout=10.0,
         )
+        if resp.status_code >= 400:
+            logger.error("Meta API error: %s %s", resp.status_code, resp.text)
         resp.raise_for_status()
         return resp.json()
 
@@ -56,6 +60,57 @@ async def send_template(
             headers=_auth_headers(),
             timeout=10.0,
         )
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def send_interactive_buttons(
+    to_phone: str,
+    body: str,
+    buttons: list[dict[str, str]],
+    header: str | None = None,
+    footer: str | None = None,
+) -> dict:
+    """Send an interactive button message (within 24-hour window).
+
+    buttons: list of {"id": "...", "title": "..."} dicts (max 3, title max 20 chars).
+    """
+    if len(buttons) > 3:
+        raise ValueError("WhatsApp allows max 3 buttons per message")
+
+    clean_phone = to_phone.lstrip("+")
+    url = f"{BASE_URL}/{settings.whatsapp_phone_number_id}/messages"
+
+    interactive: dict = {
+        "type": "button",
+        "body": {"text": body[:1024]},
+        "action": {
+            "buttons": [
+                {"type": "reply", "reply": {"id": btn["id"], "title": btn["title"][:20]}}
+                for btn in buttons
+            ]
+        },
+    }
+    if header:
+        interactive["header"] = {"type": "text", "text": header}
+    if footer:
+        interactive["footer"] = {"text": footer}
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": clean_phone,
+        "type": "interactive",
+        "interactive": interactive,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            url,
+            json=payload,
+            headers=_auth_headers(),
+            timeout=10.0,
+        )
+        if resp.status_code >= 400:
+            logger.error("Meta API error (buttons): %s %s", resp.status_code, resp.text)
         resp.raise_for_status()
         return resp.json()
 

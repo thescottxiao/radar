@@ -20,6 +20,7 @@ class IntentType(enum.StrEnum):
     rsvp_response = "rsvp_response"
     add_child_info = "add_child_info"
     approval_response = "approval_response"  # approve/dismiss/edit pending action
+    event_update = "event_update"  # update info about an existing event (mark task done, add notes)
     general_question = "general_question"
     greeting = "greeting"
     unknown = "unknown"

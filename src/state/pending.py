@@ -29,6 +29,19 @@ async def create_pending_action(
     return action
 
 
+async def get_pending_action(
+    session: AsyncSession, family_id: UUID, action_id: UUID
+) -> PendingAction | None:
+    """Fetch a single pending action by ID (filtered by family_id)."""
+    result = await session.execute(
+        select(PendingAction).where(
+            PendingAction.family_id == family_id,
+            PendingAction.id == action_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_active_pending(
     session: AsyncSession, family_id: UUID
 ) -> list[PendingAction]:

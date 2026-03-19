@@ -16,9 +16,14 @@ from sqlalchemy import (
     Time,
     text,
 )
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+# Forward-declare enums so we can reference them in type_annotation_map
+# (actual definitions below)
 
 
 class Base(DeclarativeBase):
@@ -103,6 +108,7 @@ class PendingActionType(enum.StrEnum):
     gift_selection = "gift_selection"
     camp_registration = "camp_registration"
     general_approval = "general_approval"
+    event_confirmation = "event_confirmation"
 
 
 class PendingActionStatus(enum.StrEnum):
@@ -110,6 +116,24 @@ class PendingActionStatus(enum.StrEnum):
     approved = "approved"
     dismissed = "dismissed"
     expired = "expired"
+
+
+# ── Map Python enums to Postgres enum type names ──────────────────────────
+# SQLAlchemy defaults to lowercased class name (e.g. "pendingactionstatus")
+# but schema.sql uses snake_case (e.g. "pending_action_status").
+
+Base.registry.update_type_annotation_map({
+    EventSource: SAEnum(EventSource, name="event_source", create_type=False),
+    EventType: SAEnum(EventType, name="event_type", create_type=False),
+    RsvpStatus: SAEnum(RsvpStatus, name="rsvp_status", create_type=False),
+    RsvpMethod: SAEnum(RsvpMethod, name="rsvp_method", create_type=False),
+    ActivityType: SAEnum(ActivityType, name="activity_type", create_type=False),
+    TaskStatus: SAEnum(TaskStatus, name="task_status", create_type=False),
+    ActionItemType: SAEnum(ActionItemType, name="action_item_type", create_type=False),
+    ActionItemStatus: SAEnum(ActionItemStatus, name="action_item_status", create_type=False),
+    PendingActionType: SAEnum(PendingActionType, name="pending_action_type", create_type=False),
+    PendingActionStatus: SAEnum(PendingActionStatus, name="pending_action_status", create_type=False),
+})
 
 
 # ── Core tenant tables ──────────────────────────────────────────────────

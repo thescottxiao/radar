@@ -53,6 +53,7 @@ async def persist_extraction(
     result: ExtractionResult,
     source: str = "email",
     source_ref: str | None = None,
+    skip_events: bool = False,
 ) -> list[Event]:
     """Persist extraction results: dedup events, create action items and learnings.
 
@@ -60,6 +61,9 @@ async def persist_extraction(
     For action items: create with status pending.
     For learnings: create as unconfirmed.
     Below 0.6 confidence: flag for caregiver confirmation.
+
+    If skip_events=True, events are not persisted (used when events go through
+    the button confirmation flow instead of auto-persisting).
 
     Returns list of created/merged Event objects.
     """
@@ -71,7 +75,17 @@ async def persist_extraction(
     child_name_map = {c.name.lower(): c.id for c in children}
 
     # ── Events ──────────────────────────────────────────────────────
-    for extracted_event in result.events:
+    if skip_events:
+        logger.info("Skipping event persistence (events handled via button confirmation)")
+    for extracted_event in ([] if skip_events else result.events):
+        # Skip events without a start time — they can't be persisted (NOT NULL)
+        if extracted_event.datetime_start is None:
+            logger.warning(
+                "Skipping event '%s' — no datetime_start extracted",
+                extracted_event.title,
+            )
+            continue
+
         event, is_new = await deduplicate_event(
             session,
             family_id,

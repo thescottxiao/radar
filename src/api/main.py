@@ -6,6 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.db import engine
 
+# Configure logging so our app's INFO messages are visible
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s - %(message)s")
+# Quiet down noisy libraries
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 

@@ -16,11 +16,15 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.actions.state import persist_extraction
+from src.actions.whatsapp import send_buttons_to_family
 from src.auth.tokens import decrypt_token
 from src.config import settings
 from src.extraction.email import process_email
 from src.ingestion.schemas import EmailContent
 from src.state import families as families_dal
+from src.state.models import PendingActionType
+from src.state.pending import create_pending_action
+from src.utils.button_ids import encode_button_id
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +108,50 @@ async def handle_gmail_notification(
             )
 
             if result.is_relevant:
+                # Persist action items and learnings (events go through button confirmation)
                 await persist_extraction(
                     session,
                     caregiver.family_id,
                     result,
                     source="email",
                     source_ref=msg_id,
+                    skip_events=True,
                 )
+
+                # Send button confirmation for each extracted event
+                for ev in result.events:
+                    if ev.datetime_start is None:
+                        logger.warning("Skipping event '%s' — no datetime_start", ev.title)
+                        continue
+
+                    pending = await create_pending_action(
+                        session,
+                        family_id=caregiver.family_id,
+                        action_type=PendingActionType.event_confirmation,
+                        draft_content=f"{ev.title} — {ev.datetime_start.strftime('%b %d, %I:%M %p')}",
+                        context={
+                            "event_data": ev.model_dump(mode="json"),
+                            "email_subject": email.subject,
+                            "source_ref": msg_id,
+                        },
+                    )
+
+                    time_str = ev.datetime_start.strftime("%b %d, %I:%M %p")
+                    body = f"New event from email:\n*{ev.title}*\n{time_str}"
+                    if ev.location:
+                        body += f"\n📍 {ev.location}"
+                    body += "\n\nAdd to your calendar?"
+
+                    buttons = [
+                        {"id": encode_button_id("event_confirm", str(pending.id), "yes"), "title": "Yes, add it"},
+                        {"id": encode_button_id("event_confirm", str(pending.id), "no"), "title": "No, skip"},
+                    ]
+
+                    try:
+                        await send_buttons_to_family(session, caregiver.family_id, body, buttons)
+                    except Exception:
+                        logger.exception("Failed to send button message for event '%s'", ev.title)
+
                 logger.info(
                     "Processed Gmail message %s for family %s: %d events, %d items",
                     msg_id,

@@ -48,20 +48,9 @@ async def deduplicate_event(
     False if an existing event was enriched/merged.
     """
     if extracted_event.datetime_start is None:
-        # Cannot dedup without a start time; always create new
-        event = await event_dal.create_event(
-            session,
-            family_id,
-            source=source,
-            source_refs=[source_ref] if source_ref else [],
-            type=_resolve_event_type(extracted_event.event_type),
-            title=extracted_event.title,
-            description=extracted_event.description,
-            location=extracted_event.location,
-            extraction_confidence=extracted_event.confidence,
+        raise ValueError(
+            f"Cannot create event '{extracted_event.title}' without datetime_start"
         )
-        logger.info("Created event (no datetime for dedup): %s", event.id)
-        return event, True
 
     # Look for duplicate
     existing = await event_dal.find_duplicate_event(

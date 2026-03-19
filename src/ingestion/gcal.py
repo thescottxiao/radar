@@ -73,11 +73,7 @@ async def handle_gcal_notification(
     try:
         from src.actions.gcal import fetch_calendar_changes
 
-        changes = await fetch_calendar_changes(
-            session,
-            caregiver.id,
-            sync_token=caregiver.gcal_sync_token,
-        )
+        changed_events = await fetch_calendar_changes(session, caregiver)
     except ImportError:
         logger.error(
             "src.actions.gcal not available — cannot fetch calendar changes"
@@ -91,12 +87,9 @@ async def handle_gcal_notification(
         )
         return
 
-    if not changes:
+    if not changed_events:
         logger.info("No calendar changes for caregiver=%s", caregiver.id)
         return
-
-    changed_events = changes.get("events", [])
-    new_sync_token = changes.get("next_sync_token")
 
     # Step 4: Process each changed event through the Calendar Change Detector
     notifications: list[str] = []
@@ -118,15 +111,7 @@ async def handle_gcal_notification(
                 exc,
             )
 
-    # Step 5: Update caregiver's sync token
-    if new_sync_token:
-        caregiver.gcal_sync_token = new_sync_token
-        await session.flush()
-        logger.info(
-            "Updated sync token for caregiver=%s", caregiver.id
-        )
-
-    # Step 6: Send WhatsApp notifications for relevant changes
+    # Step 5: Send WhatsApp notifications for relevant changes
     if notifications:
         await _send_change_notifications(
             session, caregiver.family_id, notifications

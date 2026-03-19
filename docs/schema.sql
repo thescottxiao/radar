@@ -323,7 +323,7 @@ CREATE INDEX idx_ics_family ON ics_subscriptions(family_id);
 
 CREATE TYPE pending_action_type AS ENUM (
     'rsvp_email', 'playdate_message', 'coach_email', 'gift_selection',
-    'camp_registration', 'general_approval'
+    'camp_registration', 'general_approval', 'event_confirmation'
 );
 
 CREATE TYPE pending_action_status AS ENUM (

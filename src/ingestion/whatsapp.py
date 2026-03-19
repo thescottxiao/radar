@@ -38,16 +38,20 @@ async def handle_whatsapp_message(
     message_text = message_data["text"]
     group_id = message_data.get("group_id")
     sender_name = message_data.get("sender_name")
+    button_reply_id = message_data.get("button_reply_id")
 
     # Look up family
     family = None
     if group_id:
         family = await families_dal.get_family_by_group_id(session, group_id)
 
-    # If no group_id or family not found, try to find by phone
+    # If no group_id or family not found, try to find by caregiver phone (DMs)
     if family is None:
-        # For DMs, we need to find the family this caregiver belongs to
-        # This is a simplification — in production we'd have a separate lookup
+        caregiver = await families_dal.find_caregiver_by_phone(session, sender_phone)
+        if caregiver:
+            family = await families_dal.get_family(session, caregiver.family_id)
+
+    if family is None:
         logger.info(
             "No family found for group_id=%s, phone=%s. May need onboarding.",
             group_id,
@@ -96,6 +100,7 @@ async def handle_whatsapp_message(
         family_id=family.id,
         message=message_text,
         sender_id=caregiver.id,
+        button_reply_id=button_reply_id,
     )
 
     logger.info(
@@ -173,6 +178,8 @@ def _extract_message_from_payload(payload: dict) -> dict | None:
         msg_type = msg.get("type", "")
 
         # Handle text messages
+        button_reply_id = None
+
         if msg_type == "text":
             text = msg.get("text", {}).get("body", "")
         elif msg_type == "interactive":
@@ -180,6 +187,7 @@ def _extract_message_from_payload(payload: dict) -> dict | None:
             interactive = msg.get("interactive", {})
             if "button_reply" in interactive:
                 text = interactive["button_reply"].get("title", "")
+                button_reply_id = interactive["button_reply"].get("id")
             elif "list_reply" in interactive:
                 text = interactive["list_reply"].get("title", "")
             else:
@@ -212,6 +220,7 @@ def _extract_message_from_payload(payload: dict) -> dict | None:
             "text": text.strip(),
             "group_id": group_id,
             "sender_name": sender_name,
+            "button_reply_id": button_reply_id,
         }
 
     except (IndexError, KeyError, TypeError):

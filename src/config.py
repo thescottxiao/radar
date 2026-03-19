@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # Encryption
     token_encryption_key: SecretStr = SecretStr("")
 
+    # Webhook base URL (public URL for receiving Google push notifications, e.g. ngrok)
+    webhook_base_url: str = ""
+
     # Forward-to email
     forward_email_domain: str = "radar.app"
 
