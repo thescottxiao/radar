@@ -20,7 +20,7 @@ class TestIcsParsing:
         """Parse the sample soccer schedule ICS fixture."""
         content = (FIXTURES_DIR / "soccer_schedule.ics").read_text()
 
-        events = await parse_ics_feed(content)
+        events = parse_ics_feed(content)
 
         assert len(events) == 4
 
@@ -41,13 +41,13 @@ class TestIcsParsing:
 
     async def test_parse_empty_content(self):
         """Parsing empty content returns empty list."""
-        events = await parse_ics_feed("")
+        events = parse_ics_feed("")
 
         assert events == []
 
     async def test_parse_invalid_ics(self):
         """Parsing invalid ICS content returns empty list (no crash)."""
-        events = await parse_ics_feed("This is not an ICS file")
+        events = parse_ics_feed("This is not an ICS file")
 
         assert events == []
 
@@ -64,7 +64,7 @@ UID:test-meeting-001@test.com
 END:VEVENT
 END:VCALENDAR"""
 
-        events = await parse_ics_feed(content)
+        events = parse_ics_feed(content)
 
         assert len(events) == 1
         assert events[0]["title"] == "Team Meeting"
@@ -88,7 +88,7 @@ UID:has-summary@test.com
 END:VEVENT
 END:VCALENDAR"""
 
-        events = await parse_ics_feed(content)
+        events = parse_ics_feed(content)
 
         assert len(events) == 1
         assert events[0]["title"] == "Has Title"
@@ -105,7 +105,7 @@ UID:field-day@test.com
 END:VEVENT
 END:VCALENDAR"""
 
-        events = await parse_ics_feed(content)
+        events = parse_ics_feed(content)
 
         assert len(events) == 1
         assert events[0]["title"] == "Field Day"

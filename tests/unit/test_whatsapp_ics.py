@@ -6,32 +6,33 @@ from uuid import uuid4
 
 import pytest
 
-from src.ingestion.whatsapp import _extract_message_from_payload, _is_ics_file
+from src.ingestion.ics import is_ics_file
+from src.ingestion.whatsapp import _extract_message_from_payload
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "ics"
 
 
 class TestIsIcsFile:
     def test_ics_extension(self):
-        assert _is_ics_file("schedule.ics", "") is True
+        assert is_ics_file("schedule.ics", "") is True
 
     def test_ics_extension_uppercase(self):
-        assert _is_ics_file("CALENDAR.ICS", "") is True
+        assert is_ics_file("CALENDAR.ICS", "") is True
 
     def test_text_calendar_mime(self):
-        assert _is_ics_file("calendar", "text/calendar") is True
+        assert is_ics_file("calendar", "text/calendar") is True
 
     def test_application_ics_mime(self):
-        assert _is_ics_file("file", "application/ics") is True
+        assert is_ics_file("file", "application/ics") is True
 
     def test_pdf_rejected(self):
-        assert _is_ics_file("document.pdf", "application/pdf") is False
+        assert is_ics_file("document.pdf", "application/pdf") is False
 
     def test_jpg_rejected(self):
-        assert _is_ics_file("photo.jpg", "image/jpeg") is False
+        assert is_ics_file("photo.jpg", "image/jpeg") is False
 
     def test_empty_rejected(self):
-        assert _is_ics_file("", "") is False
+        assert is_ics_file("", "") is False
 
 
 class TestExtractDocumentPayload:
@@ -120,10 +121,9 @@ class TestHandleIcsUpload:
 
     @patch("src.ingestion.whatsapp._download_whatsapp_media")
     @patch("src.ingestion.ics.process_ics_attachment")
-    @patch("src.state.pending.create_pending_action")
-    @patch("src.actions.whatsapp.send_buttons_to_family")
+    @patch("src.ingestion.ics.send_ics_batch_confirmation")
     async def test_successful_upload(
-        self, mock_send, mock_pending, mock_process, mock_download,
+        self, mock_confirm, mock_process, mock_download,
         family, caregiver, mock_session
     ):
         """Successful ICS upload creates pending action and sends confirmation."""
@@ -140,15 +140,12 @@ class TestHandleIcsUpload:
         mock_event.location = "FunZone"
         mock_process.return_value = [(mock_event, True)]
 
-        mock_pending.return_value = MagicMock(id=uuid4())
-
         document = {"media_id": "media-123", "filename": "party.ics", "mime_type": "text/calendar"}
         result = await _handle_ics_upload(mock_session, family, caregiver, document)
 
         assert "1 new event" in result
         mock_download.assert_called_once_with("media-123")
-        mock_pending.assert_called_once()
-        mock_send.assert_called_once()
+        mock_confirm.assert_called_once()
 
     @patch("src.ingestion.whatsapp._download_whatsapp_media")
     async def test_download_failure(self, mock_download, family, caregiver, mock_session):

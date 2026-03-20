@@ -20,7 +20,8 @@ from src.actions.whatsapp import send_buttons_to_family
 from src.auth.tokens import decrypt_token
 from src.config import settings
 from src.extraction.email import process_email
-from src.ingestion.schemas import EmailContent
+from src.ingestion.ics import is_ics_file
+from src.ingestion.schemas import EmailAttachment, EmailContent
 from src.state import families as families_dal
 from src.state.models import PendingActionType
 from src.state.pending import create_pending_action
@@ -110,7 +111,7 @@ async def handle_gmail_notification(
                     caregiver.family_id,
                     access_token,
                     msg_id,
-                    [a.model_dump() for a in email.attachments],
+                    email.attachments,
                 )
 
             result = await process_email(
@@ -370,97 +371,62 @@ async def download_gmail_attachment(
     return raw.decode("utf-8", errors="replace")
 
 
-def _is_ics_attachment(att: dict) -> bool:
-    """Check if an attachment is an ICS calendar file."""
-    filename = att.get("filename", "")
-    mime_type = att.get("mime_type", "")
-    return (
-        filename.lower().endswith(".ics")
-        or mime_type in ("text/calendar", "application/ics")
-    )
-
-
 async def _process_ics_attachments(
     session: AsyncSession,
     family_id,
     access_token: str,
     message_id: str,
-    attachments: list[dict],
+    attachments: list[EmailAttachment],
 ) -> None:
     """Download and process ICS attachments from a Gmail message."""
-    from src.ingestion.ics import process_ics_attachment
+    from src.ingestion.ics import MAX_ICS_SIZE, process_ics_attachment, send_ics_batch_confirmation
 
-    ics_attachments = [a for a in attachments if _is_ics_attachment(a)]
+    ics_attachments = [a for a in attachments if is_ics_file(a.filename, a.mime_type)]
     if not ics_attachments:
         return
 
     for att in ics_attachments:
         try:
+            # Skip attachments that are clearly too large before downloading
+            if att.size > MAX_ICS_SIZE:
+                logger.info("Skipping oversized ICS attachment '%s' (%d bytes)", att.filename, att.size)
+                continue
+
             ics_content = await download_gmail_attachment(
-                access_token, message_id, att["attachment_id"]
+                access_token, message_id, att.attachment_id
             )
             results = await process_ics_attachment(session, family_id, ics_content)
 
             if not results:
                 logger.info(
                     "No events found in ICS attachment '%s' from message %s",
-                    att["filename"], message_id,
+                    att.filename, message_id,
                 )
                 continue
 
-            new_events = [(event, is_new) for event, is_new in results if is_new]
+            new_events = [event for event, is_new in results if is_new]
             if not new_events:
                 continue
 
-            # Build batch confirmation
-            event_lines = []
-            event_ids = []
-            for event, _ in new_events:
-                event_ids.append(str(event.id))
-                time_str = event.datetime_start.strftime("%b %d, %I:%M %p") if event.datetime_start else "TBD"
-                line = f"  \u2022 {event.title} \u2014 {time_str}"
-                if event.location:
-                    line += f" ({event.location})"
-                event_lines.append(line)
-
-            pending = await create_pending_action(
-                session,
-                family_id=family_id,
-                action_type=PendingActionType.event_confirmation,
-                draft_content=f"{len(new_events)} events from email attachment ({att['filename']})",
-                context={
-                    "event_ids": event_ids,
-                    "source": "ics_attachment",
-                    "filename": att["filename"],
-                    "email_message_id": message_id,
-                    "batch": True,
-                },
-            )
-
-            body = f"Found {len(new_events)} new event(s) from an email attachment:\n"
-            body += "\n".join(event_lines)
-            body += "\n\nAdd all to your calendar?"
-
-            buttons = [
-                {"id": encode_button_id("event_confirm", str(pending.id), "yes"), "title": "Yes, add all"},
-                {"id": encode_button_id("event_confirm", str(pending.id), "no"), "title": "No, skip"},
-            ]
-
             try:
-                await send_buttons_to_family(session, family_id, body, buttons)
+                await send_ics_batch_confirmation(
+                    session, family_id, new_events, att.filename,
+                    source_label=f"an email attachment ({att.filename})",
+                    extra_context={"email_message_id": message_id},
+                )
             except Exception:
                 logger.exception(
-                    "Failed to send ICS batch confirmation for '%s'", att["filename"]
+                    "Failed to send ICS batch confirmation for '%s'", att.filename
                 )
 
             logger.info(
                 "Processed ICS attachment '%s' from message %s: %d events, %d new",
-                att["filename"], message_id, len(results), len(new_events),
+                att.filename, message_id, len(results), len(new_events),
             )
         except Exception:
             logger.exception(
                 "Failed to process ICS attachment '%s' from message %s",
-                att["filename"], message_id,
+                att.filename, message_id,
             )
 
 

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.extraction.router import classify_intent, route_intent
+from src.ingestion.ics import is_ics_file
 from src.state import families as families_dal
 from src.state import memory as memory_dal
 
@@ -187,8 +188,20 @@ def _extract_message_from_payload(payload: dict) -> dict | None:
         msg = messages[0]
         msg_type = msg.get("type", "")
 
-        # Handle text messages
+        # Extract sender info (shared across all message types)
+        sender_phone = msg.get("from", "")
+        contacts = value.get("contacts", [])
+        sender_name = None
+        if contacts:
+            sender_name = contacts[0].get("profile", {}).get("name")
+        metadata = value.get("metadata", {})
+        group_id = metadata.get("group_id")
+        if sender_phone and not sender_phone.startswith("+"):
+            sender_phone = f"+{sender_phone}"
+
+        # Parse message content by type
         button_reply_id = None
+        document = None
 
         if msg_type == "text":
             text = msg.get("text", {}).get("body", "")
@@ -203,36 +216,19 @@ def _extract_message_from_payload(payload: dict) -> dict | None:
             else:
                 return None
         elif msg_type == "document":
-            document = msg.get("document", {})
-            filename = document.get("filename", "")
-            mime_type_doc = document.get("mime_type", "")
-            media_id = document.get("id", "")
+            doc = msg.get("document", {})
+            filename = doc.get("filename", "")
+            mime_type_doc = doc.get("mime_type", "")
 
-            if not _is_ics_file(filename, mime_type_doc):
+            if not is_ics_file(filename, mime_type_doc):
                 logger.debug("Unsupported document type: %s (%s)", filename, mime_type_doc)
                 return None
 
-            sender_phone = msg.get("from", "")
-            contacts = value.get("contacts", [])
-            sender_name = None
-            if contacts:
-                sender_name = contacts[0].get("profile", {}).get("name")
-            metadata = value.get("metadata", {})
-            group_id = metadata.get("group_id")
-            if sender_phone and not sender_phone.startswith("+"):
-                sender_phone = f"+{sender_phone}"
-
-            return {
-                "sender_phone": sender_phone,
-                "text": "",
-                "group_id": group_id,
-                "sender_name": sender_name,
-                "button_reply_id": None,
-                "document": {
-                    "media_id": media_id,
-                    "filename": filename,
-                    "mime_type": mime_type_doc,
-                },
+            text = ""
+            document = {
+                "media_id": doc.get("id", ""),
+                "filename": filename,
+                "mime_type": mime_type_doc,
             }
         else:
             # Audio, image, etc. — not handled yet
@@ -240,30 +236,19 @@ def _extract_message_from_payload(payload: dict) -> dict | None:
             logger.debug("Unsupported message type: %s", msg_type)
             return None
 
-        if not text:
+        if not text and not document:
             return None
 
-        sender_phone = msg.get("from", "")
-        contacts = value.get("contacts", [])
-        sender_name = None
-        if contacts:
-            sender_name = contacts[0].get("profile", {}).get("name")
-
-        # Extract group_id from metadata if this is a group message
-        metadata = value.get("metadata", {})
-        group_id = metadata.get("group_id")
-
-        # Normalize phone to include +
-        if sender_phone and not sender_phone.startswith("+"):
-            sender_phone = f"+{sender_phone}"
-
-        return {
+        result = {
             "sender_phone": sender_phone,
-            "text": text.strip(),
+            "text": text.strip() if text else "",
             "group_id": group_id,
             "sender_name": sender_name,
             "button_reply_id": button_reply_id,
         }
+        if document:
+            result["document"] = document
+        return result
 
     except (IndexError, KeyError, TypeError):
         logger.exception("Failed to extract message from payload")
@@ -281,8 +266,6 @@ async def _handle_onboarding(
 
     # Check if the message contains children's names
     # Simple heuristic: if message has comma-separated names or "and"-separated names
-    message.lower().strip()
-
     # If they're providing names in response to onboarding prompt
     if any(sep in message for sep in [",", " and "]):
         # Parse names
@@ -315,15 +298,6 @@ async def _handle_onboarding(
         "Welcome to Radar! I help families coordinate kids' activities. "
         "To get started, what are your kids' names?"
     )
-
-
-def _is_ics_file(filename: str, mime_type: str) -> bool:
-    """Check if a document is an ICS calendar file."""
-    if filename.lower().endswith(".ics"):
-        return True
-    if mime_type in ("text/calendar", "application/ics"):
-        return True
-    return False
 
 
 async def _download_whatsapp_media(media_id: str) -> str:
@@ -367,13 +341,10 @@ async def _handle_ics_upload(
     session: AsyncSession, family, caregiver, document: dict
 ) -> str:
     """Handle an ICS file uploaded via WhatsApp."""
-    from src.actions.whatsapp import send_buttons_to_family
-    from src.ingestion.ics import process_ics_attachment
-    from src.state.models import PendingActionType
-    from src.state.pending import create_pending_action
-    from src.utils.button_ids import encode_button_id
+    from src.ingestion.ics import process_ics_attachment, send_ics_batch_confirmation
 
     media_id = document["media_id"]
+    filename = document.get("filename", "calendar file")
 
     # Download file from Meta media API
     try:
@@ -391,48 +362,17 @@ async def _handle_ics_upload(
             "Please make sure it's a valid .ics file."
         )
 
-    new_events = [(event, is_new) for event, is_new in results if is_new]
+    new_events = [event for event, is_new in results if is_new]
     dup_count = len(results) - len(new_events)
 
     if not new_events:
         return f"I found {len(results)} event(s) in that file, but they're already on your calendar."
 
-    # Build event summary for batch confirmation
-    event_lines = []
-    event_ids = []
-    for event, _ in new_events:
-        event_ids.append(str(event.id))
-        time_str = event.datetime_start.strftime("%b %d, %I:%M %p") if event.datetime_start else "TBD"
-        line = f"  \u2022 {event.title} \u2014 {time_str}"
-        if event.location:
-            line += f" ({event.location})"
-        event_lines.append(line)
-
-    # Create a single pending action for the whole batch
-    pending = await create_pending_action(
-        session,
-        family_id=family.id,
-        action_type=PendingActionType.event_confirmation,
-        draft_content=f"{len(new_events)} events from {document.get('filename', 'calendar file')}",
-        context={
-            "event_ids": event_ids,
-            "source": "ics_attachment",
-            "filename": document.get("filename", ""),
-            "batch": True,
-        },
-    )
-
-    body = f"Found {len(new_events)} new event(s) in that calendar file:\n"
-    body += "\n".join(event_lines)
-    body += "\n\nAdd all to your calendar?"
-
-    buttons = [
-        {"id": encode_button_id("event_confirm", str(pending.id), "yes"), "title": "Yes, add all"},
-        {"id": encode_button_id("event_confirm", str(pending.id), "no"), "title": "No, skip"},
-    ]
-
     try:
-        await send_buttons_to_family(session, family.id, body, buttons)
+        await send_ics_batch_confirmation(
+            session, family.id, new_events, filename,
+            source_label=f"that calendar file",
+        )
     except Exception:
         logger.exception("Failed to send ICS batch confirmation")
 

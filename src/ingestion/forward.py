@@ -12,13 +12,10 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.actions.state import persist_extraction
-from src.actions.whatsapp import send_buttons_to_family
 from src.extraction.email import process_email
+from src.ingestion.ics import is_ics_file
 from src.ingestion.schemas import EmailContent
 from src.state import families as families_dal
-from src.state.models import PendingActionType
-from src.state.pending import create_pending_action
-from src.utils.button_ids import encode_button_id
 
 logger = logging.getLogger(__name__)
 
@@ -145,16 +142,13 @@ async def _process_forwarded_ics_attachments(
     raw_attachments: list[dict],
 ) -> None:
     """Process ICS attachments from a forwarded email payload."""
-    from src.ingestion.ics import process_ics_attachment
+    from src.ingestion.ics import process_ics_attachment, send_ics_batch_confirmation
 
     for att in raw_attachments:
         filename = att.get("filename", att.get("name", ""))
         content_type = att.get("content_type", att.get("type", ""))
 
-        if not (
-            filename.lower().endswith(".ics")
-            or content_type in ("text/calendar", "application/ics")
-        ):
+        if not is_ics_file(filename, content_type):
             continue
 
         att_content = att.get("content", "")
@@ -178,45 +172,15 @@ async def _process_forwarded_ics_attachments(
         if not results:
             continue
 
-        new_events = [(event, is_new) for event, is_new in results if is_new]
+        new_events = [event for event, is_new in results if is_new]
         if not new_events:
             continue
 
-        # Build batch confirmation
-        event_lines = []
-        event_ids = []
-        for event, _ in new_events:
-            event_ids.append(str(event.id))
-            time_str = event.datetime_start.strftime("%b %d, %I:%M %p") if event.datetime_start else "TBD"
-            line = f"  \u2022 {event.title} \u2014 {time_str}"
-            if event.location:
-                line += f" ({event.location})"
-            event_lines.append(line)
-
-        pending = await create_pending_action(
-            session,
-            family_id=family_id,
-            action_type=PendingActionType.event_confirmation,
-            draft_content=f"{len(new_events)} events from forwarded email ({filename})",
-            context={
-                "event_ids": event_ids,
-                "source": "ics_attachment",
-                "filename": filename,
-                "batch": True,
-            },
-        )
-
-        body = f"Found {len(new_events)} new event(s) from a forwarded email:\n"
-        body += "\n".join(event_lines)
-        body += "\n\nAdd all to your calendar?"
-
-        buttons = [
-            {"id": encode_button_id("event_confirm", str(pending.id), "yes"), "title": "Yes, add all"},
-            {"id": encode_button_id("event_confirm", str(pending.id), "no"), "title": "No, skip"},
-        ]
-
         try:
-            await send_buttons_to_family(session, family_id, body, buttons)
+            await send_ics_batch_confirmation(
+                session, family_id, new_events, filename,
+                source_label=f"a forwarded email ({filename})",
+            )
         except Exception:
             logger.exception("Failed to send ICS batch confirmation for '%s'", filename)
 

@@ -8,9 +8,9 @@ import pytest
 
 from src.ingestion.gmail import (
     _extract_attachments,
-    _is_ics_attachment,
     _walk_for_attachments,
 )
+from src.ingestion.ics import is_ics_file
 
 
 class TestExtractAttachments:
@@ -116,21 +116,21 @@ class TestExtractAttachments:
         assert attachments == []
 
 
-class TestIsIcsAttachment:
+class TestIsIcsFile:
     def test_ics_extension(self):
-        assert _is_ics_attachment({"filename": "event.ics", "mime_type": "application/octet-stream"}) is True
+        assert is_ics_file("event.ics", "application/octet-stream") is True
 
     def test_text_calendar_mime(self):
-        assert _is_ics_attachment({"filename": "invite", "mime_type": "text/calendar"}) is True
+        assert is_ics_file("invite", "text/calendar") is True
 
     def test_application_ics_mime(self):
-        assert _is_ics_attachment({"filename": "file", "mime_type": "application/ics"}) is True
+        assert is_ics_file("file", "application/ics") is True
 
     def test_pdf_not_ics(self):
-        assert _is_ics_attachment({"filename": "doc.pdf", "mime_type": "application/pdf"}) is False
+        assert is_ics_file("doc.pdf", "application/pdf") is False
 
     def test_ics_extension_case_insensitive(self):
-        assert _is_ics_attachment({"filename": "CALENDAR.ICS", "mime_type": ""}) is True
+        assert is_ics_file("CALENDAR.ICS", "") is True
 
 
 class TestDownloadGmailAttachment:
