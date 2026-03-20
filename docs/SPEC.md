@@ -132,7 +132,13 @@ A family (tenant) is defined by a **WhatsApp group**. Any number of caregivers c
 
 - **Mechanism:** Family provides a URL to an .ics calendar feed (sports leagues, school calendars, activity providers).
 - **Polling:** System fetches the ICS feed periodically (every 30 minutes) and diffs against stored events.
-- **Also supports:** Caregivers forwarding .ics file attachments to the bot's email address or directly in WhatsApp.
+- **ICS file attachments:** Caregivers can also forward .ics file attachments to the bot's email address or upload them directly in WhatsApp.
+  - **WhatsApp:** Document uploads with `.ics` extension or `text/calendar` MIME type are detected, downloaded from Meta's media API, parsed, and deduped.
+  - **Gmail:** ICS attachments in incoming emails are extracted, downloaded via Gmail API, parsed, and deduped.
+  - **Forward-to email:** ICS attachments in forwarded emails are extracted from the inbound webhook payload, parsed, and deduped.
+  - **Confirmation:** A single batch confirmation ("Found N events — add all?") is sent via WhatsApp buttons. One PendingAction covers the whole batch.
+  - **Confidence:** ICS data is treated as reliable (confidence 0.9), same as feed polling.
+  - **No persistence:** Raw ICS content is parsed and discarded in the request — never stored.
 
 ### 4.6 Work Calendar Free/Busy (Deferred)
 

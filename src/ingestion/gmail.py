@@ -103,6 +103,16 @@ async def handle_gmail_notification(
 
             email = EmailContent(**email_content)
 
+            # Process ICS attachments before normal email extraction
+            if email.attachments:
+                await _process_ics_attachments(
+                    session,
+                    caregiver.family_id,
+                    access_token,
+                    msg_id,
+                    [a.model_dump() for a in email.attachments],
+                )
+
             result = await process_email(
                 session, caregiver.family_id, email, source="email"
             )
@@ -260,6 +270,9 @@ async def fetch_email_content(
     # Extract body
     body_text, body_html = _extract_body(data.get("payload", {}))
 
+    # Extract attachment metadata
+    attachments = _extract_attachments(data.get("payload", {}))
+
     return {
         "message_id": message_id,
         "from_address": from_email or from_address,
@@ -268,6 +281,7 @@ async def fetch_email_content(
         "body_text": body_text,
         "body_html": body_html,
         "date": date,
+        "attachments": attachments,
     }
 
 
@@ -308,6 +322,146 @@ def _extract_body(payload: dict) -> tuple[str, str]:
                 body_html = nested_html
 
     return body_text, body_html
+
+
+def _extract_attachments(payload: dict) -> list[dict]:
+    """Extract attachment metadata from Gmail message payload.
+
+    Recursively walks MIME parts looking for parts with filenames and
+    attachmentIds. Returns metadata only — content is downloaded on demand.
+    """
+    attachments: list[dict] = []
+    _walk_for_attachments(payload, attachments)
+    return attachments
+
+
+def _walk_for_attachments(part: dict, attachments: list[dict]) -> None:
+    """Recursively walk MIME parts to find attachments."""
+    filename = part.get("filename", "")
+    body = part.get("body", {})
+    attachment_id = body.get("attachmentId", "")
+
+    if filename and attachment_id:
+        attachments.append({
+            "filename": filename,
+            "mime_type": part.get("mimeType", ""),
+            "attachment_id": attachment_id,
+            "size": body.get("size", 0),
+        })
+
+    for sub_part in part.get("parts", []):
+        _walk_for_attachments(sub_part, attachments)
+
+
+async def download_gmail_attachment(
+    access_token: str, message_id: str, attachment_id: str
+) -> str:
+    """Download a single Gmail attachment by ID. Returns content as string."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{GMAIL_API_BASE}/users/me/messages/{message_id}/attachments/{attachment_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    raw = base64.urlsafe_b64decode(data.get("data", ""))
+    return raw.decode("utf-8", errors="replace")
+
+
+def _is_ics_attachment(att: dict) -> bool:
+    """Check if an attachment is an ICS calendar file."""
+    filename = att.get("filename", "")
+    mime_type = att.get("mime_type", "")
+    return (
+        filename.lower().endswith(".ics")
+        or mime_type in ("text/calendar", "application/ics")
+    )
+
+
+async def _process_ics_attachments(
+    session: AsyncSession,
+    family_id,
+    access_token: str,
+    message_id: str,
+    attachments: list[dict],
+) -> None:
+    """Download and process ICS attachments from a Gmail message."""
+    from src.ingestion.ics import process_ics_attachment
+
+    ics_attachments = [a for a in attachments if _is_ics_attachment(a)]
+    if not ics_attachments:
+        return
+
+    for att in ics_attachments:
+        try:
+            ics_content = await download_gmail_attachment(
+                access_token, message_id, att["attachment_id"]
+            )
+            results = await process_ics_attachment(session, family_id, ics_content)
+
+            if not results:
+                logger.info(
+                    "No events found in ICS attachment '%s' from message %s",
+                    att["filename"], message_id,
+                )
+                continue
+
+            new_events = [(event, is_new) for event, is_new in results if is_new]
+            if not new_events:
+                continue
+
+            # Build batch confirmation
+            event_lines = []
+            event_ids = []
+            for event, _ in new_events:
+                event_ids.append(str(event.id))
+                time_str = event.datetime_start.strftime("%b %d, %I:%M %p") if event.datetime_start else "TBD"
+                line = f"  \u2022 {event.title} \u2014 {time_str}"
+                if event.location:
+                    line += f" ({event.location})"
+                event_lines.append(line)
+
+            pending = await create_pending_action(
+                session,
+                family_id=family_id,
+                action_type=PendingActionType.event_confirmation,
+                draft_content=f"{len(new_events)} events from email attachment ({att['filename']})",
+                context={
+                    "event_ids": event_ids,
+                    "source": "ics_attachment",
+                    "filename": att["filename"],
+                    "email_message_id": message_id,
+                    "batch": True,
+                },
+            )
+
+            body = f"Found {len(new_events)} new event(s) from an email attachment:\n"
+            body += "\n".join(event_lines)
+            body += "\n\nAdd all to your calendar?"
+
+            buttons = [
+                {"id": encode_button_id("event_confirm", str(pending.id), "yes"), "title": "Yes, add all"},
+                {"id": encode_button_id("event_confirm", str(pending.id), "no"), "title": "No, skip"},
+            ]
+
+            try:
+                await send_buttons_to_family(session, family_id, body, buttons)
+            except Exception:
+                logger.exception(
+                    "Failed to send ICS batch confirmation for '%s'", att["filename"]
+                )
+
+            logger.info(
+                "Processed ICS attachment '%s' from message %s: %d events, %d new",
+                att["filename"], message_id, len(results), len(new_events),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to process ICS attachment '%s' from message %s",
+                att["filename"], message_id,
+            )
 
 
 async def _get_access_token(caregiver) -> str:

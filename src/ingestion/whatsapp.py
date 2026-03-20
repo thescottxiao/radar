@@ -3,8 +3,10 @@
 import logging
 from datetime import UTC, datetime, timedelta
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import settings
 from src.extraction.router import classify_intent, route_intent
 from src.state import families as families_dal
 from src.state import memory as memory_dal
@@ -83,6 +85,14 @@ async def handle_whatsapp_message(
     # Check if family is onboarded
     if not family.onboarding_complete:
         return await _handle_onboarding(session, family, caregiver, message_text)
+
+    # Handle ICS document uploads before intent routing
+    if message_data.get("document"):
+        response = await _handle_ics_upload(
+            session, family, caregiver, message_data["document"]
+        )
+        await session.commit()
+        return response
 
     # Store message in conversation memory
     memory_content = f"{caregiver.name or sender_phone}: {message_text}"
@@ -192,9 +202,41 @@ def _extract_message_from_payload(payload: dict) -> dict | None:
                 text = interactive["list_reply"].get("title", "")
             else:
                 return None
+        elif msg_type == "document":
+            document = msg.get("document", {})
+            filename = document.get("filename", "")
+            mime_type_doc = document.get("mime_type", "")
+            media_id = document.get("id", "")
+
+            if not _is_ics_file(filename, mime_type_doc):
+                logger.debug("Unsupported document type: %s (%s)", filename, mime_type_doc)
+                return None
+
+            sender_phone = msg.get("from", "")
+            contacts = value.get("contacts", [])
+            sender_name = None
+            if contacts:
+                sender_name = contacts[0].get("profile", {}).get("name")
+            metadata = value.get("metadata", {})
+            group_id = metadata.get("group_id")
+            if sender_phone and not sender_phone.startswith("+"):
+                sender_phone = f"+{sender_phone}"
+
+            return {
+                "sender_phone": sender_phone,
+                "text": "",
+                "group_id": group_id,
+                "sender_name": sender_name,
+                "button_reply_id": None,
+                "document": {
+                    "media_id": media_id,
+                    "filename": filename,
+                    "mime_type": mime_type_doc,
+                },
+            }
         else:
-            # Audio, image, etc. — not handled in Phase 1
-            # Voice notes will be handled in Phase 2
+            # Audio, image, etc. — not handled yet
+            # Voice notes will be handled in Phase 4
             logger.debug("Unsupported message type: %s", msg_type)
             return None
 
@@ -273,3 +315,128 @@ async def _handle_onboarding(
         "Welcome to Radar! I help families coordinate kids' activities. "
         "To get started, what are your kids' names?"
     )
+
+
+def _is_ics_file(filename: str, mime_type: str) -> bool:
+    """Check if a document is an ICS calendar file."""
+    if filename.lower().endswith(".ics"):
+        return True
+    if mime_type in ("text/calendar", "application/ics"):
+        return True
+    return False
+
+
+async def _download_whatsapp_media(media_id: str) -> str:
+    """Download media content from Meta Cloud API.
+
+    Two-step process:
+    1. GET /{media_id} to get the download URL
+    2. GET the download URL with auth header to get content
+
+    Returns the file content as a string.
+    Does not persist the file (per data model rules).
+    """
+    headers = {
+        "Authorization": f"Bearer {settings.whatsapp_api_token.get_secret_value()}"
+    }
+
+    async with httpx.AsyncClient() as client:
+        # Step 1: Get media URL
+        resp = await client.get(
+            f"https://graph.facebook.com/v21.0/{media_id}",
+            headers=headers,
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        media_url = resp.json().get("url")
+
+        if not media_url:
+            raise ValueError(f"No URL in media response for {media_id}")
+
+        # Step 2: Download content
+        resp = await client.get(
+            media_url,
+            headers=headers,
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        return resp.text
+
+
+async def _handle_ics_upload(
+    session: AsyncSession, family, caregiver, document: dict
+) -> str:
+    """Handle an ICS file uploaded via WhatsApp."""
+    from src.actions.whatsapp import send_buttons_to_family
+    from src.ingestion.ics import process_ics_attachment
+    from src.state.models import PendingActionType
+    from src.state.pending import create_pending_action
+    from src.utils.button_ids import encode_button_id
+
+    media_id = document["media_id"]
+
+    # Download file from Meta media API
+    try:
+        ics_content = await _download_whatsapp_media(media_id)
+    except Exception:
+        logger.exception("Failed to download ICS file (media_id=%s)", media_id)
+        return "Sorry, I couldn't download that file. Please try again."
+
+    # Process through ICS pipeline
+    results = await process_ics_attachment(session, family.id, ics_content)
+
+    if not results:
+        return (
+            "I couldn't find any events in that calendar file. "
+            "Please make sure it's a valid .ics file."
+        )
+
+    new_events = [(event, is_new) for event, is_new in results if is_new]
+    dup_count = len(results) - len(new_events)
+
+    if not new_events:
+        return f"I found {len(results)} event(s) in that file, but they're already on your calendar."
+
+    # Build event summary for batch confirmation
+    event_lines = []
+    event_ids = []
+    for event, _ in new_events:
+        event_ids.append(str(event.id))
+        time_str = event.datetime_start.strftime("%b %d, %I:%M %p") if event.datetime_start else "TBD"
+        line = f"  \u2022 {event.title} \u2014 {time_str}"
+        if event.location:
+            line += f" ({event.location})"
+        event_lines.append(line)
+
+    # Create a single pending action for the whole batch
+    pending = await create_pending_action(
+        session,
+        family_id=family.id,
+        action_type=PendingActionType.event_confirmation,
+        draft_content=f"{len(new_events)} events from {document.get('filename', 'calendar file')}",
+        context={
+            "event_ids": event_ids,
+            "source": "ics_attachment",
+            "filename": document.get("filename", ""),
+            "batch": True,
+        },
+    )
+
+    body = f"Found {len(new_events)} new event(s) in that calendar file:\n"
+    body += "\n".join(event_lines)
+    body += "\n\nAdd all to your calendar?"
+
+    buttons = [
+        {"id": encode_button_id("event_confirm", str(pending.id), "yes"), "title": "Yes, add all"},
+        {"id": encode_button_id("event_confirm", str(pending.id), "no"), "title": "No, skip"},
+    ]
+
+    try:
+        await send_buttons_to_family(session, family.id, body, buttons)
+    except Exception:
+        logger.exception("Failed to send ICS batch confirmation")
+
+    summary = f"Found {len(new_events)} new event(s) in that calendar file."
+    if dup_count > 0:
+        summary += f" ({dup_count} already on your calendar.)"
+    return summary

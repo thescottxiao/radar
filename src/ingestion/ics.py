@@ -1,7 +1,8 @@
-"""ICS feed poller and differ.
+"""ICS feed poller, differ, and attachment processor.
 
 Polls ICS feed subscriptions, diffs against stored events, and passes
-new/changed events through the extraction pipeline.
+new/changed events through the extraction pipeline. Also handles ICS
+file attachments from WhatsApp uploads and email.
 """
 
 import logging
@@ -19,6 +20,71 @@ from src.state import events as event_dal
 from src.state.models import Event, EventSource, IcsSubscription
 
 logger = logging.getLogger(__name__)
+
+
+MAX_ICS_SIZE = 1_000_000  # 1 MB
+
+
+async def process_ics_attachment(
+    session: AsyncSession,
+    family_id: UUID,
+    content: str,
+) -> list[tuple[Event, bool]]:
+    """Parse an ICS file attachment and run events through dedup.
+
+    Shared entry point for WhatsApp uploads and email attachments.
+    Returns list of (Event, is_new) tuples for the caller to confirm.
+    """
+    # Validate content
+    if len(content) > MAX_ICS_SIZE:
+        logger.warning("ICS content too large (%d bytes), skipping", len(content))
+        return []
+
+    if not content.strip().upper().startswith("BEGIN:VCALENDAR"):
+        logger.info("Content does not look like ICS (no BEGIN:VCALENDAR)")
+        return []
+
+    parsed_events = await parse_ics_feed(content)
+    if not parsed_events:
+        return []
+
+    results: list[tuple[Event, bool]] = []
+    for event_data in parsed_events:
+        if not event_data.get("datetime_start"):
+            continue
+
+        extracted = ExtractedEvent(
+            title=event_data["title"],
+            event_type=event_data.get("event_type", "other"),
+            datetime_start=event_data.get("datetime_start"),
+            datetime_end=event_data.get("datetime_end"),
+            location=event_data.get("location"),
+            description=event_data.get("description"),
+            confidence=0.9,
+        )
+        source_ref = event_data.get("uid", "")
+        try:
+            event, is_new = await deduplicate_event(
+                session,
+                family_id,
+                extracted,
+                source=EventSource.ics_feed,
+                source_ref=source_ref,
+            )
+            results.append((event, is_new))
+        except ValueError:
+            logger.warning(
+                "Skipping ICS event '%s' — missing required fields",
+                event_data.get("title"),
+            )
+
+    logger.info(
+        "Processed ICS attachment for family %s: %d parsed, %d results",
+        family_id,
+        len(parsed_events),
+        len(results),
+    )
+    return results
 
 
 async def poll_ics_feeds(session: AsyncSession) -> None:

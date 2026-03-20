@@ -1,0 +1,57 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Radar Test//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Kids Spring Activities
+BEGIN:VEVENT
+DTSTART:20260325T163000Z
+DTEND:20260325T173000Z
+DTSTAMP:20260320T120000Z
+UID:swim-lesson-20260325@radartest
+SUMMARY:Swim Lesson - Level 3
+LOCATION:Oakdale Aquatic Center
+DESCRIPTION:Weekly swim lesson. Bring goggles, towel, and swim cap.
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20260328T090000Z
+DTEND:20260328T120000Z
+DTSTAMP:20260320T120000Z
+UID:science-fair-20260328@radartest
+SUMMARY:Science Fair
+LOCATION:Lincoln Elementary School - Gym
+DESCRIPTION:Annual science fair. Projects due by 8:30am for setup. Judging starts at 10am. Parents welcome to attend.
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20260401T170000Z
+DTEND:20260401T183000Z
+DTSTAMP:20260320T120000Z
+UID:soccer-practice-20260401@radartest
+SUMMARY:Soccer Practice - Spring League
+LOCATION:Riverside Park Field 2
+DESCRIPTION:First practice of spring season. Bring cleats, shin guards, and water bottle. Coach will hand out jerseys.
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20260404T130000Z
+DTEND:20260404T160000Z
+DTSTAMP:20260320T120000Z
+UID:birthday-party-20260404@radartest
+SUMMARY:Jake's Birthday Party
+LOCATION:Adventure Zone Trampoline Park
+DESCRIPTION:Jake turns 9! RSVP to Sarah by April 1. Gift ideas: Legos, books, art supplies. Drop-off party, pickup at 4pm.
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20260407T153000Z
+DTEND:20260407T163000Z
+DTSTAMP:20260320T120000Z
+UID:piano-recital-20260407@radartest
+SUMMARY:Spring Piano Recital
+LOCATION:Community Arts Center - Main Hall
+DESCRIPTION:Dress code: semi-formal. Arrive 15 minutes early. Each student performs one piece. Reception follows in the lobby.
+STATUS:CONFIRMED
+END:VEVENT
+END:VCALENDAR
