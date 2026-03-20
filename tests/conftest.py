@@ -11,7 +11,7 @@ from src.state.models import (
     Child,
     Event,
     EventSource,
-    EventType,
+
     Family,
     RsvpMethod,
     RsvpStatus,
@@ -142,7 +142,7 @@ async def sample_events(session: AsyncSession, sample_family: dict) -> list[Even
         Event(
             family_id=family.id,
             source=EventSource.manual,
-            type=EventType.sports_practice,
+            type="sports_practice",
             title="Soccer Practice",
             datetime_start=now + timedelta(days=1, hours=2),
             datetime_end=now + timedelta(days=1, hours=3, minutes=30),
@@ -151,7 +151,7 @@ async def sample_events(session: AsyncSession, sample_family: dict) -> list[Even
         Event(
             family_id=family.id,
             source=EventSource.calendar,
-            type=EventType.birthday_party,
+            type="birthday_party",
             title="Sophia's Birthday Party",
             datetime_start=now + timedelta(days=3, hours=5),
             datetime_end=now + timedelta(days=3, hours=7),
@@ -164,7 +164,7 @@ async def sample_events(session: AsyncSession, sample_family: dict) -> list[Even
         Event(
             family_id=family.id,
             source=EventSource.manual,
-            type=EventType.school_event,
+            type="school_event",
             title="Parent Teacher Conference",
             datetime_start=now + timedelta(days=5, hours=4),
             datetime_end=now + timedelta(days=5, hours=4, minutes=30),

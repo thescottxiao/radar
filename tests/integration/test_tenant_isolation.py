@@ -7,7 +7,7 @@ import pytest
 from src.state import children as child_dal
 from src.state import events as event_dal
 from src.state import families
-from src.state.models import EventSource, EventType
+from src.state.models import EventSource
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SKIP_DB_TESTS", "1") == "1", reason="Database not available"
@@ -25,7 +25,7 @@ class TestTenantIsolation:
             session,
             family_a.id,
             source=EventSource.manual,
-            type=EventType.sports_practice,
+            type="sports_practice",
             title="Family A Soccer",
             datetime_start=now + timedelta(days=1),
         )
@@ -33,7 +33,7 @@ class TestTenantIsolation:
             session,
             family_b.id,
             source=EventSource.manual,
-            type=EventType.birthday_party,
+            type="birthday_party",
             title="Family B Party",
             datetime_start=now + timedelta(days=1),
         )
@@ -90,7 +90,7 @@ class TestTenantIsolation:
             session,
             family_a.id,
             source=EventSource.manual,
-            type=EventType.sports_practice,
+            type="sports_practice",
             title="Soccer Practice",
             datetime_start=now + timedelta(days=1),
         )

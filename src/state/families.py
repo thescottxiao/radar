@@ -128,6 +128,18 @@ async def update_caregiver_google_tokens(
     return caregiver
 
 
+async def update_family_timezone(
+    session: AsyncSession, family_id: UUID, timezone: str
+) -> Family:
+    """Update the family's timezone (e.g., inferred from Google Calendar settings)."""
+    family = await session.get(Family, family_id)
+    if family is None:
+        raise ValueError(f"Family {family_id} not found")
+    family.timezone = timezone
+    await session.flush()
+    return family
+
+
 async def get_caregivers_needing_watch_renewal(
     session: AsyncSession, within_hours: int = 48
 ) -> list[Caregiver]:

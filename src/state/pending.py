@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.state.models import PendingAction, PendingActionStatus, PendingActionType
@@ -45,10 +45,26 @@ async def get_pending_action(
 async def get_active_pending(
     session: AsyncSession, family_id: UUID
 ) -> list[PendingAction]:
+    """Get pending actions that are awaiting approval and not expired.
+
+    Actions are considered expired if:
+    - expires_at is set and in the past, OR
+    - expires_at is NULL and created_at is older than 24 hours (legacy fallback)
+    """
+    now = datetime.now(UTC)
+    fallback_cutoff = now - timedelta(hours=24)
     result = await session.execute(
         select(PendingAction).where(
             PendingAction.family_id == family_id,
             PendingAction.status == PendingActionStatus.awaiting_approval,
+            or_(
+                PendingAction.expires_at > now,
+                # Legacy actions without expires_at: use created_at as fallback
+                and_(
+                    PendingAction.expires_at.is_(None),
+                    PendingAction.created_at > fallback_cutoff,
+                ),
+            ),
         ).order_by(PendingAction.created_at.desc())
     )
     return list(result.scalars().all())

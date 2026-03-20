@@ -9,12 +9,11 @@ from uuid import uuid4
 
 import pytest
 from src.extraction.calendar import (
-    _infer_event_type,
     _parse_gcal_datetime,
     gcal_event_to_radar_event,
     process_calendar_change,
 )
-from src.state.models import Event, EventSource, EventType
+from src.state.models import Event, EventSource
 
 # ── GCal event mapping tests ──────────────────────────────────────────
 
@@ -43,7 +42,7 @@ class TestGcalEventToRadarEvent:
         assert result["location"] == "Westfield Fields"
         assert result["source"] == EventSource.calendar
         assert result["source_refs"] == ["gcal:abc123"]
-        assert result["type"] == EventType.sports_practice
+        assert result["type"] == "other"
         assert result["confirmed_by_caregiver"] is True
         assert result["extraction_confidence"] == 1.0
         assert result["is_recurring"] is False
@@ -95,34 +94,20 @@ class TestGcalEventToRadarEvent:
         assert result["title"] == "Untitled Event"
         assert result["description"] is None
         assert result["location"] is None
-        assert result["type"] == EventType.other
+        assert result["type"] == "other"
 
-    def test_event_type_inference(self):
+    def test_event_type_is_free_form_string(self):
+        """Event type is always 'other' for GCal events (free-form, no enum)."""
         family_id = uuid4()
         caregiver_id = uuid4()
 
-        test_cases = [
-            ("Emma's Birthday Party", EventType.birthday_party),
-            ("Soccer Practice", EventType.sports_practice),
-            ("Basketball Game", EventType.sports_game),
-            ("School Open House", EventType.school_event),
-            ("Summer Camp", EventType.camp),
-            ("Playdate with Max", EventType.playdate),
-            ("Doctor Appointment", EventType.medical_appointment),
-            ("Dentist Checkup", EventType.dental_appointment),
-            ("Piano Recital", EventType.recital_performance),
-            ("Registration Deadline", EventType.registration_deadline),
-            ("Random Meeting", EventType.other),
-        ]
-
-        for summary, expected_type in test_cases:
-            gcal_event = {
-                "id": f"test_{summary}",
-                "summary": summary,
-                "start": {"dateTime": "2026-03-25T10:00:00-04:00"},
-            }
-            result = gcal_event_to_radar_event(gcal_event, family_id, caregiver_id)
-            assert result["type"] == expected_type, f"Failed for '{summary}': expected {expected_type}, got {result['type']}"
+        gcal_event = {
+            "id": "test_birthday",
+            "summary": "Emma's Birthday Party",
+            "start": {"dateTime": "2026-03-25T10:00:00-04:00"},
+        }
+        result = gcal_event_to_radar_event(gcal_event, family_id, caregiver_id)
+        assert isinstance(result["type"], str)
 
 
 # ── Datetime parsing tests ─────────────────────────────────────────────
@@ -149,26 +134,6 @@ class TestParseGcalDatetime:
     def test_none(self):
         assert _parse_gcal_datetime(None) is None
 
-
-# ── Event type inference tests ─────────────────────────────────────────
-
-
-class TestInferEventType:
-
-    def test_birthday(self):
-        assert _infer_event_type("Sophia's Birthday Party") == EventType.birthday_party
-
-    def test_practice(self):
-        assert _infer_event_type("Soccer Practice") == EventType.sports_practice
-
-    def test_game(self):
-        assert _infer_event_type("Basketball Game") == EventType.sports_game
-
-    def test_case_insensitive(self):
-        assert _infer_event_type("SOCCER PRACTICE") == EventType.sports_practice
-
-    def test_unknown(self):
-        assert _infer_event_type("Weekly Team Sync") == EventType.other
 
 
 # ── Change classification tests ────────────────────────────────────────
@@ -210,8 +175,8 @@ class TestProcessCalendarChange:
 
         assert result is not None
         assert result["change_type"] == "new_event"
-        assert result["notification"] is not None
-        assert "Swim Lessons" in result["notification"]
+        # GCal changes don't generate WhatsApp notifications (GCal is source of truth)
+        assert result["notification"] is None
 
     @pytest.mark.asyncio
     async def test_duplicate_event_not_created(self):
@@ -276,7 +241,8 @@ class TestProcessCalendarChange:
 
         assert result is not None
         assert result["change_type"] == "cancellation"
-        assert "cancelled" in result["notification"].lower()
+        # GCal changes don't generate WhatsApp notifications (GCal is source of truth)
+        assert result["notification"] is None
 
     @pytest.mark.asyncio
     async def test_time_change(self):
@@ -315,8 +281,8 @@ class TestProcessCalendarChange:
 
         assert result is not None
         assert result["change_type"] == "time_change"
-        assert result["notification"] is not None
-        assert "time changed" in result["notification"].lower()
+        # GCal changes don't generate WhatsApp notifications (GCal is source of truth)
+        assert result["notification"] is None
 
     @pytest.mark.asyncio
     async def test_location_change(self):
@@ -354,7 +320,8 @@ class TestProcessCalendarChange:
 
         assert result is not None
         assert result["change_type"] == "location_change"
-        assert "Community Center Pool" in result["notification"]
+        # GCal changes don't generate WhatsApp notifications (GCal is source of truth)
+        assert result["notification"] is None
 
     @pytest.mark.asyncio
     async def test_no_changes_detected(self):

@@ -100,11 +100,8 @@ CREATE TYPE event_source AS ENUM (
     'email', 'calendar', 'manual', 'ics_feed', 'forwarded'
 );
 
-CREATE TYPE event_type AS ENUM (
-    'birthday_party', 'sports_practice', 'sports_game', 'school_event',
-    'camp', 'playdate', 'medical_appointment', 'dental_appointment',
-    'recital_performance', 'registration_deadline', 'other'
-);
+-- event_type is a free-form TEXT column (not an enum).
+-- This allows the LLM to return any descriptive event type without validation errors.
 
 CREATE TYPE rsvp_status AS ENUM (
     'pending', 'accepted', 'declined', 'not_applicable'
@@ -159,7 +156,7 @@ CREATE TABLE events (
     family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
     source          event_source NOT NULL,
     source_refs     TEXT[] DEFAULT '{}',  -- dedup: list of source IDs that mapped here
-    type            event_type NOT NULL DEFAULT 'other',
+    type            TEXT NOT NULL DEFAULT 'other',
     title           TEXT NOT NULL,
     description     TEXT,
     datetime_start  TIMESTAMPTZ NOT NULL,

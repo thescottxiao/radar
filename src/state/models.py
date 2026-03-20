@@ -41,20 +41,6 @@ class EventSource(enum.StrEnum):
     forwarded = "forwarded"
 
 
-class EventType(enum.StrEnum):
-    birthday_party = "birthday_party"
-    sports_practice = "sports_practice"
-    sports_game = "sports_game"
-    school_event = "school_event"
-    camp = "camp"
-    playdate = "playdate"
-    medical_appointment = "medical_appointment"
-    dental_appointment = "dental_appointment"
-    recital_performance = "recital_performance"
-    registration_deadline = "registration_deadline"
-    other = "other"
-
-
 class RsvpStatus(enum.StrEnum):
     pending = "pending"
     accepted = "accepted"
@@ -124,7 +110,7 @@ class PendingActionStatus(enum.StrEnum):
 
 Base.registry.update_type_annotation_map({
     EventSource: SAEnum(EventSource, name="event_source", create_type=False),
-    EventType: SAEnum(EventType, name="event_type", create_type=False),
+
     RsvpStatus: SAEnum(RsvpStatus, name="rsvp_status", create_type=False),
     RsvpMethod: SAEnum(RsvpMethod, name="rsvp_method", create_type=False),
     ActivityType: SAEnum(ActivityType, name="activity_type", create_type=False),
@@ -311,7 +297,7 @@ class Event(Base):
     family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
     source: Mapped[EventSource] = mapped_column(nullable=False)
     source_refs: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=[])
-    type: Mapped[EventType] = mapped_column(nullable=False, default=EventType.other)
+    type: Mapped[str] = mapped_column(Text, nullable=False, default="other")
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     datetime_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

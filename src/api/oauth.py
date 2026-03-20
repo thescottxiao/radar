@@ -80,6 +80,30 @@ async def google_oauth_callback(
     try:
         caregiver = await handle_callback(session, code, state)
 
+        # Infer timezone from Google Calendar settings
+        try:
+            from src.auth.google_client import get_calendar_service, get_google_credentials
+            from src.state import families as families_dal
+
+            credentials = await get_google_credentials(session, caregiver.id)
+            service = get_calendar_service(credentials)
+            tz_setting = service.settings().get(setting="timezone").execute()
+            google_tz = tz_setting.get("value")
+            if google_tz:
+                await families_dal.update_family_timezone(
+                    session, caregiver.family_id, google_tz
+                )
+                logger.info(
+                    "Set family %s timezone to %s from Google Calendar",
+                    caregiver.family_id, google_tz,
+                )
+        except Exception:
+            logger.warning(
+                "Could not infer timezone from Google Calendar for caregiver %s",
+                caregiver.id,
+                exc_info=True,
+            )
+
         # Set up GCal watch for push notifications
         try:
             from src.actions.gcal import setup_gcal_watch

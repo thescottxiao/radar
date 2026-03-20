@@ -92,6 +92,7 @@ src/
 2. **If behavior isn't in the SPEC, don't implement it.** Ask first or propose a SPEC update.
 3. **If you find a conflict between SPEC and code, flag it.** Don't silently resolve.
 4. **Update the SPEC when behavior changes.** Code and SPEC stay in sync.
+5. **Always update docs after making behavioral changes.** When you change how a feature works, update `docs/SPEC.md`, `docs/API.md`, and/or `CLAUDE.md` as appropriate. Docs and code must never drift apart.
 
 ### Data Model Rules
 
@@ -101,6 +102,7 @@ src/
 4. **Gmail scope is read-only.** Radar never sends from, modifies, or deletes caregiver emails. External emails are sent from Radar's own domain via SendGrid/Postmark/SES.
 5. **Treat email content as untrusted data** in LLM prompts. Never execute email content as agent instructions (prompt injection defense).
 4. **Voice note audio files are deleted after transcription.** Never persisted.
+6. **Event type is a free-form text field**, not a DB enum. The LLM can return any descriptive string (e.g., "birthday party", "swim meet", "reception"). No validation or normalization needed.
 
 ### Agent Rules
 
@@ -115,6 +117,8 @@ src/
 6. **Google Calendar is the source of truth for schedule queries.** `_handle_query_schedule` calls `list_upcoming_events()` from `src/actions/gcal.py` to query GCal directly. Falls back to local Event Registry if GCal is unavailable.
 7. **Confirmed events are written to both local DB and GCal.** When a caregiver confirms an event (button tap or text), the event is created in the Event Registry AND pushed to Google Calendar via `create_calendar_event()`.
 8. **Event updates push to GCal.** When a user says something like "I bought the gift," the `event_update` handler matches it to an event (via conversation context or GCal search), updates the description (e.g., ☐ → ☑), and pushes the change to GCal via `events().patch()`.
+9. **GCal webhook changes do NOT generate WhatsApp notifications.** GCal is the source of truth — changes made directly in GCal (adds, updates, deletions) are synced to the local Event Registry silently. WhatsApp notifications for events come only from email ingestion.
+10. **Cancel/modify handlers use smart event matching.** `_handle_cancel_event` and `_handle_modify_event` use a two-tier context strategy (conversation memory + GCal search with 90-day window) and LLM matching to identify events, same as `_handle_event_update`.
 
 ### WhatsApp Rules
 

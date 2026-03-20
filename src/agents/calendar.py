@@ -24,7 +24,7 @@ from src.state import children as children_dal
 from src.state import events as events_dal
 from src.state import families as families_dal
 from src.state import memory as memory_dal
-from src.state.models import Event, EventSource, EventType
+from src.state.models import Event, EventSource
 
 logger = logging.getLogger(__name__)
 
@@ -127,13 +127,6 @@ async def _build_family_context(session: AsyncSession, family_id: UUID) -> dict:
     }
 
 
-def _resolve_event_type(type_str: str) -> EventType:
-    """Resolve an extracted event type string to the EventType enum."""
-    try:
-        return EventType(type_str)
-    except ValueError:
-        return EventType.other
-
 
 # ── Public API ──────────────────────────────────────────────────────────
 
@@ -229,12 +222,11 @@ async def handle_schedule(
         )
 
     # Step 5: Create the event (AUTO action)
-    event_type = _resolve_event_type(extracted.event_type)
     event = await events_dal.create_event(
         session,
         family_id,
         source=EventSource.manual,
-        type=event_type,
+        type=extracted.event_type,
         title=resolved.title,
         datetime_start=resolved.datetime_start,
         datetime_end=resolved.datetime_end,

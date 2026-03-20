@@ -14,7 +14,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.state import events as events_dal
-from src.state.models import Event, EventSource, EventType, ScheduleException
+from src.state.models import Event, EventSource, ScheduleException
 
 logger = logging.getLogger(__name__)
 
@@ -25,27 +25,6 @@ GCAL_STATUS_TENTATIVE = "tentative"
 
 
 # ── GCal event field mapping ───────────────────────────────────────────
-
-# Maps GCal event type keywords in summary/description to Radar EventType
-_EVENT_TYPE_KEYWORDS: dict[str, EventType] = {
-    "birthday": EventType.birthday_party,
-    "soccer": EventType.sports_practice,
-    "practice": EventType.sports_practice,
-    "game": EventType.sports_game,
-    "match": EventType.sports_game,
-    "school": EventType.school_event,
-    "camp": EventType.camp,
-    "playdate": EventType.playdate,
-    "play date": EventType.playdate,
-    "doctor": EventType.medical_appointment,
-    "pediatrician": EventType.medical_appointment,
-    "dentist": EventType.dental_appointment,
-    "recital": EventType.recital_performance,
-    "performance": EventType.recital_performance,
-    "concert": EventType.recital_performance,
-    "registration": EventType.registration_deadline,
-    "deadline": EventType.registration_deadline,
-}
 
 
 def gcal_event_to_radar_event(
@@ -75,16 +54,13 @@ def gcal_event_to_radar_event(
     datetime_start = _parse_gcal_datetime(start_info)
     datetime_end = _parse_gcal_datetime(end_info)
 
-    # Determine event type from title keywords
-    event_type = _infer_event_type(summary)
-
     # Check for recurrence
     is_recurring = bool(gcal_event.get("recurringEventId"))
 
     return {
         "source": EventSource.calendar,
         "source_refs": [f"gcal:{gcal_id}"],
-        "type": event_type,
+        "type": "other",
         "title": summary,
         "description": description,
         "datetime_start": datetime_start,
@@ -188,12 +164,12 @@ async def _handle_cancellation(
         description=(event.description or "") + "\n[CANCELLED]",
     )
 
-    notification = f"\"{event.title}\" on {event.datetime_start.strftime('%A, %B %d')} has been cancelled."
-
+    # No WhatsApp notification — GCal is the source of truth, the user
+    # already knows about changes they made directly in their calendar.
     return {
         "change_type": "cancellation",
         "event_id": event.id,
-        "notification": notification,
+        "notification": None,
     }
 
 
@@ -249,16 +225,12 @@ async def _handle_update(
     # Determine primary change type for classification
     change_type = "time_change" if "datetime_start" in update_kwargs else "location_change"
 
-    notification = None
-    if changes:
-        notification = (
-            f"\"{existing_event.title}\": {', '.join(changes)}."
-        )
-
+    # No WhatsApp notification — GCal is the source of truth, the user
+    # already knows about changes they made directly in their calendar.
     return {
         "change_type": change_type,
         "event_id": existing_event.id,
-        "notification": notification,
+        "notification": None,
     }
 
 
@@ -306,17 +278,13 @@ async def _handle_new_event(
     # Create new event
     event = await events_dal.create_event(session, family_id, **mapped)
 
-    notification = (
-        f"New event from calendar: \"{event.title}\" on "
-        f"{event.datetime_start.strftime('%A, %B %d at %I:%M %p')}"
-    )
-    if event.location:
-        notification += f" at {event.location}"
-
+    # No WhatsApp notification — GCal is the source of truth, the user
+    # already knows about events they added directly to their calendar.
+    # Email-extracted events go through a separate notification path.
     return {
         "change_type": "new_event",
         "event_id": event.id,
-        "notification": notification,
+        "notification": None,
     }
 
 
@@ -343,10 +311,3 @@ def _parse_gcal_datetime(dt_info: dict) -> datetime | None:
     return None
 
 
-def _infer_event_type(summary: str) -> EventType:
-    """Infer the Radar EventType from a GCal event summary."""
-    summary_lower = summary.lower()
-    for keyword, event_type in _EVENT_TYPE_KEYWORDS.items():
-        if keyword in summary_lower:
-            return event_type
-    return EventType.other

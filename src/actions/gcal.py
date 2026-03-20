@@ -249,6 +249,33 @@ async def delete_calendar_event(
             )
 
 
+async def delete_gcal_event_by_id(
+    session: AsyncSession, family_id: UUID, gcal_id: str
+) -> None:
+    """Delete a single GCal event by its GCal ID from all connected caregivers' calendars."""
+    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+
+    for caregiver in caregivers:
+        if caregiver.google_refresh_token_encrypted is None:
+            continue
+
+        try:
+            credentials = await get_google_credentials(session, caregiver.id)
+            service = get_calendar_service(credentials)
+            service.events().delete(
+                calendarId="primary",
+                eventId=gcal_id,
+            ).execute()
+            logger.info("Deleted GCal event %s for caregiver %s", gcal_id, caregiver.id)
+            break  # Only need to delete on one calendar
+        except Exception:
+            logger.debug(
+                "Could not delete GCal event %s for caregiver %s",
+                gcal_id,
+                caregiver.id,
+            )
+
+
 async def setup_gcal_watch(
     session: AsyncSession, caregiver: Caregiver
 ) -> None:

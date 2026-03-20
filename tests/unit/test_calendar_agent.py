@@ -15,7 +15,7 @@ from src.agents.calendar import (
     handle_schedule,
 )
 from src.agents.schemas import ExtractedEvent, ResolvedEvent
-from src.state.models import Event, EventChild, EventSource, EventType
+from src.state.models import Event, EventChild, EventSource
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ def _make_event(
     ev.datetime_end = now + timedelta(hours=start_offset_hours + duration_hours)
     ev.location = location
     ev.source = EventSource.manual
-    ev.type = EventType.sports_practice
+    ev.type = "sports_practice"
     ev.description = None
     ev.is_recurring = False
     ev.children = children or []

@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from src.state import events as event_dal
-from src.state.models import EventSource, EventType
+from src.state.models import EventSource
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SKIP_DB_TESTS", "1") == "1", reason="Database not available"
@@ -18,7 +18,7 @@ class TestEvents:
             session,
             family.id,
             source=EventSource.manual,
-            type=EventType.sports_practice,
+            type="sports_practice",
             title="Basketball Practice",
             datetime_start=now + timedelta(days=1),
         )

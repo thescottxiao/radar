@@ -11,28 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.extraction.email import ExtractedEvent
 from src.state import events as event_dal
-from src.state.models import Event, EventSource, EventType
+from src.state.models import Event, EventSource
 
 logger = logging.getLogger(__name__)
-
-# Mapping from extraction string types to model enums
-_EVENT_TYPE_MAP = {
-    "birthday_party": EventType.birthday_party,
-    "sports_practice": EventType.sports_practice,
-    "sports_game": EventType.sports_game,
-    "school_event": EventType.school_event,
-    "camp": EventType.camp,
-    "playdate": EventType.playdate,
-    "medical_appointment": EventType.medical_appointment,
-    "dental_appointment": EventType.dental_appointment,
-    "recital_performance": EventType.recital_performance,
-    "registration_deadline": EventType.registration_deadline,
-    "other": EventType.other,
-}
-
-
-def _resolve_event_type(type_str: str) -> EventType:
-    return _EVENT_TYPE_MAP.get(type_str, EventType.other)
 
 
 async def deduplicate_event(
@@ -86,7 +67,7 @@ async def deduplicate_event(
         family_id,
         source=source,
         source_refs=[source_ref] if source_ref else [],
-        type=_resolve_event_type(extracted_event.event_type),
+        type=extracted_event.event_type,
         title=extracted_event.title,
         description=extracted_event.description,
         datetime_start=extracted_event.datetime_start,

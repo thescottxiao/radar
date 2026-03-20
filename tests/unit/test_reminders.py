@@ -20,7 +20,7 @@ from src.state.models import (
     ActionItemType,
     Event,
     EventSource,
-    EventType,
+
     FamilyLearning,
     RsvpStatus,
 )
@@ -59,7 +59,7 @@ def _make_event(
     event.rsvp_status = rsvp_status
     event.rsvp_deadline = rsvp_deadline
     event.source = EventSource.manual
-    event.type = EventType.sports_practice
+    event.type = "sports_practice"
     return event
 
 

@@ -379,11 +379,13 @@ FamilyLearning {
 **Purpose:** Process GCal webhook notifications, classify changes, and update the Event Registry.
 
 **Change classification:**
-- `new_event`: New event on any connected calendar → create Event, check for duplicates
-- `time_change`: Existing event rescheduled → update Event, check for new conflicts
-- `cancellation`: Event deleted → update Event status, if part of season log as exception
-- `location_change`: Location updated → update Event, notify group if transport implications
+- `new_event`: New event on any connected calendar → create Event in local DB, check for duplicates
+- `time_change`: Existing event rescheduled → update Event in local DB
+- `cancellation`: Event deleted → update Event status in local DB, if part of season log as exception
+- `location_change`: Location updated → update Event in local DB
 - `attendee_change`: New attendees added → check if new child involved
+
+**No WhatsApp notifications for GCal changes:** GCal is the source of truth. Changes made directly in GCal (adds, updates, deletions) are synced to the local Event Registry but do NOT generate WhatsApp notifications — the user already knows about changes they made in their own calendar. WhatsApp notifications for events come only from email ingestion (via the Email Extraction Agent → pending action approval flow).
 
 **Recurring schedule awareness:** If a recurring event instance is modified or cancelled, update only that instance in the RecurringSchedule exceptions list. Do not modify the overall schedule pattern.
 
@@ -420,10 +422,14 @@ FamilyLearning {
 
 **Conversation context:** The classifier receives the last 10 messages from conversation memory to understand follow-up messages. If a user just confirmed "Garden Party for the Newlyweds" and then says "I already bought a wedding gift," the classifier recognizes this as an `event_update` for the garden party.
 
-**Event update handling (two-tier context):** When an `event_update` intent is classified:
+**Smart event matching (two-tier context):** The `cancel_event`, `modify_event`, and `event_update` handlers all use the same two-tier strategy to identify which event the user is referring to:
 1. **Tier 1 — Recent conversation:** Check the last 10 messages for context about which event the user means.
-2. **Tier 2 — GCal search:** If conversation context isn't sufficient, query Google Calendar for upcoming events (30-day window) and fuzzy-match the message against event titles and descriptions.
-3. The LLM matches the message to an event, determines the update (e.g., mark a prep checklist item as done: ☐ → ☑), pushes the updated description to GCal, and confirms to the user.
+2. **Tier 2 — GCal search:** Query Google Calendar for upcoming events (90-day default window) and let the LLM fuzzy-match the message against event titles and descriptions.
+3. The LLM matches the message to an event, determines the action, executes it (cancel from GCal, modify in GCal, or update description), and confirms to the user.
+
+- **cancel_event:** Deletes the matched event from GCal and soft-deletes locally (appends `[CANCELLED]` to description).
+- **modify_event:** Applies the requested changes (time, location, title, etc.) to both GCal and local DB.
+- **event_update:** Updates event metadata (e.g., mark a prep checklist item as done: ☐ → ☑) in both GCal and local DB.
 
 **Schedule queries use GCal as source of truth:** When a user asks "what's on my schedule," the system queries Google Calendar directly (not the local Event Registry) to ensure manually-added events and external changes are included. Falls back to local DB if GCal is unavailable.
 
