@@ -317,7 +317,8 @@ class TestRouteIntent:
             pending_action_id=action_id,
         )
 
-        with patch("src.extraction.router.pending_dal.resolve_pending", new_callable=AsyncMock) as mock_resolve:
+        with patch("src.extraction.router.pending_dal.resolve_pending", new_callable=AsyncMock) as mock_resolve, \
+             patch("src.extraction.router.pending_dal.get_pending_action", new_callable=AsyncMock, return_value=None):
             response = await route_intent(
                 session, family_id, intent, "yes", sender_id
             )
@@ -339,7 +340,8 @@ class TestRouteIntent:
             pending_action_id=action_id,
         )
 
-        with patch("src.extraction.router.pending_dal.resolve_pending", new_callable=AsyncMock) as mock_resolve:
+        with patch("src.extraction.router.pending_dal.resolve_pending", new_callable=AsyncMock) as mock_resolve, \
+             patch("src.extraction.router.pending_dal.get_pending_action", new_callable=AsyncMock, return_value=None):
             response = await route_intent(
                 session, family_id, intent, "no", sender_id
             )

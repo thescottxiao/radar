@@ -351,15 +351,14 @@ async def _handle_add_event(
     message: str,
     sender_id: UUID,
 ) -> str:
-    """Handle add_event intent: extract details, suggest prep, confirm via buttons.
+    """Handle add_event intent: extract details, create event directly.
 
-    Flow: extract → generate prep tasks → create pending action → send buttons.
-    The event is only created in DB + GCal when the caregiver approves.
+    Flow: extract → check missing details → if complete, create event in DB + GCal.
+    If details are missing, create a pending action to collect them.
+    Manual events are auto-added (no confirmation step).
     """
-    from src.actions.whatsapp import send_buttons_to_family
     from src.extraction.schemas import ExtractedEvent
     from src.llm import extract, generate
-    from src.utils.button_ids import encode_button_id
 
     # Use family's timezone for accurate "today" context
     local_now = await _get_local_now(session, family_id)
@@ -391,92 +390,121 @@ async def _handle_add_event(
             "When is it? Please include the date and time."
         )
 
-    # Generate prep task suggestions based on event type/title
-    prep_checklist = ""
+    # Check if key details are missing — ask before creating pending action
+    missing = []
+    if not extracted.time_explicit:
+        missing.append("what time")
+    if not extracted.location:
+        missing.append("where")
+
+    if missing:
+        dt_str = extracted.datetime_start.strftime("%A, %B %d") if extracted.datetime_start else "soon"
+        missing_q = " and ".join(missing)
+        ask_text = (
+            f"Got it — *{extracted.title}* on {dt_str}. "
+            f"{missing_q.capitalize()} is it?"
+        )
+
+        # Serialize partial event data for storage
+        event_data = extracted.model_dump(mode="json")
+
+        # Dismiss any existing detail-collection pending actions
+        active_pending = await pending_dal.get_active_pending(session, family_id)
+        for pa in active_pending:
+            if pa.context.get("missing_fields"):
+                await pending_dal.resolve_pending(
+                    session, family_id, pa.id,
+                    status=PendingActionStatus.dismissed, resolved_by=sender_id,
+                )
+
+        # Create pending action with partial data — expires in 1 hour
+        await pending_dal.create_pending_action(
+            session,
+            family_id=family_id,
+            action_type=PendingActionType.event_confirmation,
+            draft_content=ask_text,
+            context={
+                "event_data": event_data,
+                "source": "manual",
+                "missing_fields": missing,
+            },
+            initiated_by=sender_id,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+        # Store in conversation memory for classifier context
+        await memory_dal.store_message(
+            session, family_id=family_id,
+            content=f"Radar: {ask_text}",
+            msg_type="short_term",
+            expires_at=datetime.now(UTC) + timedelta(hours=24),
+        )
+
+        return ask_text
+
+    # All details present — create event directly (no confirmation needed for manual events)
+    event_kwargs: dict = {
+        "title": extracted.title,
+        "source": "manual",
+        "type": extracted.event_type or "other",
+        "datetime_start": extracted.datetime_start,
+        "extraction_confidence": extracted.confidence,
+        "confirmed_by_caregiver": True,
+    }
+    if extracted.datetime_end:
+        event_kwargs["datetime_end"] = extracted.datetime_end
+    if extracted.location:
+        event_kwargs["location"] = extracted.location
+    if extracted.description:
+        event_kwargs["description"] = extracted.description
+
+    event = await events_dal.create_event(session, family_id, **event_kwargs)
+
+    # Write to Google Calendar (source of truth)
+    try:
+        from src.actions.gcal import create_calendar_event
+
+        gcal_ids = await create_calendar_event(session, family_id, event)
+        if gcal_ids:
+            logger.info("Created GCal event(s) %s for '%s'", gcal_ids, extracted.title)
+    except Exception:
+        logger.exception("Failed to create GCal event for '%s' — saved locally only", extracted.title)
+
+    # Build response
+    dt_str = extracted.datetime_start.strftime("%a %b %d, %I:%M %p")
+    parts = [f"✅ Added to your calendar: *{extracted.title}*", f"{dt_str}"]
+    if extracted.location:
+        parts.append(f"📍 {extracted.location}")
+
+    # Generate prep tips (shown after event is added)
     try:
         tip_prompt = f"""\
 Event: {extracted.title}
-Type: {extracted.event_type}
-Date: {extracted.datetime_start.strftime("%A, %B %d at %I:%M %p")}
-Location: {extracted.location or "Not specified"}
+Date: {dt_str}
+Location: {extracted.location or "TBD"}
 
-Suggest 2-4 practical prep tasks for this event. Think about what someone might \
-need to do beforehand (e.g., buy a gift for a birthday party, pack gear for sports, \
-confirm attendance). Each item should be short (max 10 words) and actionable. \
-Use "☐" prefix for each item. Only include genuinely useful items — skip anything \
-obvious like "show up" or "have fun". If no prep is really needed, return nothing."""
+List ONLY tasks that are clearly important and specific to this event type. Examples:
+- Birthday party → "Buy birthday gift"
+- Sports → "Pack gear bag"
+- Medical → "Bring insurance card"
+
+Do NOT include generic advice like "confirm details", "check parking", "plan outfit", \
+"get directions", or "check weather". If nothing specific is needed, return NOTHING.
+
+Use "•" prefix."""
         tips = await generate(
             tip_prompt,
-            system="You are a concise family assistant. Return only checklist items, nothing else.",
+            system="You are a concise family assistant. Return only genuinely important, event-specific bullet points. If nothing specific is needed, return nothing at all.",
         )
         if tips and tips.strip():
-            prep_checklist = tips.strip()
+            parts.append("")
+            parts.append("*Heads up:*")
+            tip_lines = [line.strip() for line in tips.strip().split("\n") if line.strip().startswith("•")]
+            parts.extend(tip_lines)
     except Exception:
-        logger.debug("Could not generate prep suggestions for '%s'", extracted.title)
+        logger.debug("Could not generate prep tips for '%s'", extracted.title)
 
-    # Build the event description (prep checklist becomes the description)
-    description = extracted.description or ""
-    if prep_checklist:
-        if description:
-            description += "\n\n"
-        description += prep_checklist
-
-    # Serialize event data for the pending action context
-    event_data = extracted.model_dump(mode="json")
-    event_data["description"] = description  # include prep checklist
-
-    # Build confirmation message
-    dt_str = extracted.datetime_start.strftime("%a %b %d, %I:%M %p")
-    parts = [f"*{extracted.title}*", f"📅 {dt_str}"]
-    if extracted.location:
-        parts.append(f"📍 {extracted.location}")
-    else:
-        parts.append("📍 No location specified")
-
-    if prep_checklist:
-        parts.append("")
-        parts.append("*Suggested prep:*")
-        for line in prep_checklist.split("\n"):
-            if line.strip():
-                parts.append(line.strip())
-
-    parts.append("\nAdd to your calendar?")
-    body = "\n".join(parts)
-
-    # Create pending action (expires after 24 hours to avoid stale context)
-    pending = await pending_dal.create_pending_action(
-        session,
-        family_id=family_id,
-        action_type=PendingActionType.event_confirmation,
-        draft_content=body,
-        context={"event_data": event_data, "source": "manual"},
-        initiated_by=sender_id,
-        expires_at=datetime.now(UTC) + timedelta(hours=24),
-    )
-
-    # Send interactive buttons
-    buttons = [
-        {"id": encode_button_id("event_confirm", str(pending.id), "yes"), "title": "Yes, add it"},
-        {"id": encode_button_id("event_confirm", str(pending.id), "no"), "title": "No, skip"},
-    ]
-
-    # Store confirmation in conversation memory so the LLM classifier
-    # can see the full context when the user replies
-    await memory_dal.store_message(
-        session,
-        family_id=family_id,
-        content=f"Radar: {body}",
-        msg_type="short_term",
-        expires_at=datetime.now(UTC) + timedelta(hours=24),
-    )
-
-    try:
-        await send_buttons_to_family(session, family_id, body, buttons)
-        return ""  # Button message sent directly; no additional text reply needed
-    except Exception:
-        logger.exception("Failed to send button confirmation for '%s'", extracted.title)
-        # Fall back to text-only confirmation
-        return body + "\n\nReply 'yes' to add or 'no' to skip."
+    return "\n".join(parts)
 
 
 async def _handle_query_schedule(
@@ -590,9 +618,12 @@ async def _handle_modify_event(
 You are Radar, a family calendar assistant. The user wants to modify an existing event.
 
 Your job:
-1. Figure out which event they're referring to using conversation context and calendar events.
-2. Determine what they want to change (time, location, title, description, etc.).
-3. Return a JSON response with:
+1. Resolve any relative date references in the user's message (e.g., "tomorrow", "next week", \
+"this Saturday") using today's date. This is critical for matching the correct event.
+2. Figure out which event they're referring to by matching the resolved date AND description \
+against the calendar events. Date match takes priority over conversation context.
+3. Determine what they want to change (time, location, title, description, etc.).
+4. Return a JSON response with:
    - "matched_event": the title of the event they're referring to (or null if you can't determine it)
    - "gcal_id": the gcal_id of the matched event if available (or null)
    - "modifications": a dict of fields to update. Valid keys:
@@ -744,8 +775,11 @@ async def _handle_cancel_event(
 You are Radar, a family calendar assistant. The user wants to cancel an event.
 
 Your job:
-1. Figure out which event they're referring to using conversation context and calendar events.
-2. Return a JSON response with:
+1. Resolve any relative date references in the user's message (e.g., "tomorrow", "next week", \
+"this Saturday") using today's date. This is critical for matching the correct event.
+2. Figure out which event they're referring to by matching the resolved date AND description \
+against the calendar events. Date match takes priority over conversation context.
+3. Return a JSON response with:
    - "matched_event": the title of the event they're referring to (or null if you can't determine it)
    - "gcal_id": the gcal_id of the matched event if available (or null)
    - "confirmation_message": a friendly confirmation message (e.g., "Cancelled \\\"Soccer Practice\\\" on Saturday.")
@@ -878,6 +912,12 @@ async def _handle_approval_response(
             session, family_id, pending_action_id
         )
         if pending_action and pending_action.type.value == "event_confirmation":
+            # If still collecting details, treat as edit — merge the user's
+            # details into event_data before creating (don't lose them)
+            if pending_action.context.get("missing_fields"):
+                return await _handle_event_confirmation_edit(
+                    session, family_id, pending_action, message,
+                )
             response = await _create_event_from_pending(session, family_id, pending_action)
         else:
             response = "Approved! I'll take care of it."
@@ -1021,8 +1061,16 @@ Date: {dt_str}
 Location: {event_data.get('location', 'TBD')}
 Details: {description}
 
-List only the most important things to know or prepare before this event. Skip anything obvious or trivial. Each bullet should be short (max 10 words) and actionable. Use "•" prefix. No preamble."""
-            tips = await generate(tip_prompt, system="You are a concise family assistant. Return only bullet points, nothing else. Only include what actually matters.")
+List ONLY tasks that are clearly important and specific to this event type. Examples:
+- Birthday party → "Buy birthday gift"
+- Sports → "Pack gear bag"
+- Medical → "Bring insurance card"
+
+Do NOT include generic advice like "confirm details", "check parking", "plan outfit", \
+"get directions", or "check weather". If nothing specific is needed, return NOTHING.
+
+Use "•" prefix."""
+            tips = await generate(tip_prompt, system="You are a concise family assistant. Return only genuinely important, event-specific bullet points. If nothing specific is needed, return nothing at all.")
             if tips and tips.strip():
                 parts.append("")
                 parts.append("*Heads up:*")
@@ -1127,16 +1175,83 @@ Today's date: {_local_today}"""
         parts.append("\nAdd to your calendar?")
         body = "\n".join(parts)
 
-        # Update the pending action context and draft
-        updated_context = dict(pending_action.context)
+        # Update the pending action context
+        # Use deep copy to avoid in-place mutation that SQLAlchemy can't detect
+        import copy
+        updated_context = copy.deepcopy(pending_action.context)
         updated_context["event_data"] = event_data
-        pending_action.context = updated_context
-        pending_action.draft_content = body
         edit_history = (pending_action.edit_history or []) + [{
             "instruction": instruction,
             "timestamp": datetime.now(UTC).isoformat(),
         }]
         pending_action.edit_history = edit_history
+
+        # Check if we were collecting missing details
+        missing_fields = pending_action.context.get("missing_fields", [])
+        if missing_fields:
+            # Check what's still missing after the edit
+            still_missing = []
+            if "what time" in missing_fields and "datetime_start" not in updates:
+                still_missing.append("what time")
+            if "where" in missing_fields and not event_data.get("location"):
+                still_missing.append("where")
+
+            if still_missing:
+                # Still incomplete — update context and ask for remaining fields
+                updated_context["missing_fields"] = still_missing
+                pending_action.context = updated_context
+                pending_action.draft_content = body
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(pending_action, "context")
+                flag_modified(pending_action, "edit_history")
+                await session.flush()
+
+                title = event_data.get("title", "the event")
+                missing_q = " and ".join(still_missing)
+                ask_text = f"Thanks! {missing_q.capitalize()} is *{title}*?"
+
+                await memory_dal.store_message(
+                    session, family_id=family_id,
+                    content=f"Radar: {ask_text}",
+                    msg_type="short_term",
+                    expires_at=datetime.now(UTC) + timedelta(hours=24),
+                )
+                return ask_text
+
+            # All details collected — clear missing_fields
+            if "missing_fields" in updated_context:
+                del updated_context["missing_fields"]
+
+            # Update context before creating/confirming
+            pending_action.context = updated_context
+            pending_action.draft_content = body
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(pending_action, "context")
+            flag_modified(pending_action, "edit_history")
+            await session.flush()
+
+            if updated_context.get("source") == "manual":
+                # Manual event: auto-add directly, no confirmation needed
+                response = await _create_event_from_pending(session, family_id, pending_action)
+                await pending_dal.resolve_pending(
+                    session, family_id, pending_action.id,
+                    status=PendingActionStatus.approved,
+                    resolved_by=pending_action.initiated_by,
+                )
+                return response
+            else:
+                # Email event: show confirmation with buttons
+                pending_action.expires_at = datetime.now(UTC) + timedelta(hours=24)
+                flag_modified(pending_action, "expires_at")
+                await session.flush()
+                # Fall through to button-sending below
+
+        # Update pending action and show confirmation with buttons
+        pending_action.context = updated_context
+        pending_action.draft_content = body
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(pending_action, "context")
+        flag_modified(pending_action, "edit_history")
         await session.flush()
 
         # Store updated confirmation in conversation memory
@@ -1148,7 +1263,7 @@ Today's date: {_local_today}"""
             expires_at=datetime.now(UTC) + timedelta(hours=24),
         )
 
-        # Re-send buttons with updated confirmation
+        # Send buttons with confirmation
         buttons = [
             {"id": encode_button_id("event_confirm", str(pending_action.id), "yes"), "title": "Yes, add it"},
             {"id": encode_button_id("event_confirm", str(pending_action.id), "no"), "title": "No, skip"},
@@ -1197,13 +1312,17 @@ async def _handle_event_update(
         )
 
     # Use LLM to match the message to an event and determine the update
+    _local_today = (await _get_local_now(session, family_id)).strftime("%A, %B %d, %Y")
     system = """\
 You are Radar, a family calendar assistant. The user wants to update something about an existing event.
 
 Your job:
-1. Figure out which event they're referring to using conversation context and calendar events.
-2. Determine what update they want to make (e.g., mark a prep task done, add notes, change details).
-3. Return a JSON response with:
+1. Resolve any relative date references in the user's message (e.g., "tomorrow", "next week", \
+"this Saturday") using today's date. This is critical for matching the correct event.
+2. Figure out which event they're referring to by matching the resolved date AND description \
+against the calendar events. Date match takes priority over conversation context.
+3. Determine what update they want to make (e.g., mark a prep task done, add notes, change details).
+4. Return a JSON response with:
    - "matched_event": the title of the event they're referring to (or null if you can't determine it)
    - "gcal_id": the gcal_id of the matched event if available (or null)
    - "update_description": a short description of the update (e.g., "Mark 'Purchase wedding gift' as done")
@@ -1213,6 +1332,8 @@ Your job:
 Only output the JSON. No other text."""
 
     prompt = f"""User message: {message}
+
+Today's date: {_local_today}
 
 Recent conversation:
 {conversation_context if conversation_context else "(No recent conversation)"}

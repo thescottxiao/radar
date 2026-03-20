@@ -53,6 +53,11 @@ class ExtractedEvent(BaseModel):
     rsvp_deadline: datetime | None = None
     rsvp_contact: str | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    time_explicit: bool = Field(
+        default=False,
+        description="True if the user explicitly stated a specific time (e.g., '3pm', 'at 10:00', 'noon'). "
+        "False if time was inferred from vague terms like 'morning', 'evening', 'afternoon', or not mentioned.",
+    )
 
 
 class ExtractedActionItem(BaseModel):
