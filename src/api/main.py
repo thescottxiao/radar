@@ -27,6 +27,16 @@ async def lifespan(app: FastAPI):
 
             await conn.execute(text("SELECT 1"))
         logger.info("Database connected")
+
+        # Clear stale pending actions so they don't confuse intent classification
+        from src.db import async_session
+        from src.state.pending import expire_all_pending
+
+        async with async_session() as session:
+            expired = await expire_all_pending(session)
+            await session.commit()
+            if expired:
+                logger.info("Expired %d stale pending actions on startup", expired)
     except Exception as e:
         logger.error("Database connection failed: %s", e)
 

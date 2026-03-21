@@ -1,10 +1,22 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.state.models import PendingAction, PendingActionStatus, PendingActionType
+
+
+async def expire_all_pending(session: AsyncSession) -> int:
+    """Expire all awaiting_approval actions. Used on server restart to clear stale state."""
+    now = datetime.now(UTC)
+    result = await session.execute(
+        update(PendingAction)
+        .where(PendingAction.status == PendingActionStatus.awaiting_approval)
+        .values(status=PendingActionStatus.expired, resolved_at=now)
+    )
+    await session.flush()
+    return result.rowcount
 
 
 async def create_pending_action(
