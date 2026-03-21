@@ -45,6 +45,16 @@ class TestParseClassificationResponse:
         assert result.intent == IntentType.unknown
         assert result.confidence == 0.0
 
+    def test_parse_json_with_trailing_reasoning(self):
+        raw = (
+            '{\n  "intent": "general_question",\n  "confidence": 0.95,\n'
+            '  "extracted_params": {}\n}\n```\n'
+            '**Reasoning:** The user is asking a general question about what info Radar has.'
+        )
+        result = _parse_classification_response(raw)
+        assert result.intent == IntentType.general_question
+        assert result.confidence == 0.95
+
     def test_parse_missing_fields_uses_defaults(self):
         raw = json.dumps({"intent": "greeting"})
         result = _parse_classification_response(raw)

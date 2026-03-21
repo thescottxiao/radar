@@ -212,15 +212,28 @@ def _parse_classification_response(raw: str) -> IntentResult:
         text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
         text = text.strip()
 
+    # Extract JSON object — the LLM may append reasoning text after the JSON
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        logger.warning("Could not parse classification response: %s", text[:200])
-        return IntentResult(
-            intent=IntentType.unknown,
-            confidence=0.0,
-            extracted_params={"raw_response": text},
-        )
+        # Try to find a JSON object in the text
+        brace_start = text.find("{")
+        brace_end = text.rfind("}")
+        if brace_start != -1 and brace_end > brace_start:
+            try:
+                data = json.loads(text[brace_start:brace_end + 1])
+            except json.JSONDecodeError:
+                data = None
+        else:
+            data = None
+
+        if data is None:
+            logger.warning("Could not parse classification response: %s", text[:200])
+            return IntentResult(
+                intent=IntentType.unknown,
+                confidence=0.0,
+                extracted_params={"raw_response": text},
+            )
 
     intent_str = data.get("intent", "unknown")
     try:
