@@ -77,6 +77,17 @@ async def classify_intent(
 
         decoded = decode_button_id(button_reply_id)
         if decoded:
+            # child_link buttons carry the child name as the response
+            if decoded["action_type"] == "child_link":
+                return IntentResult(
+                    intent=IntentType.approval_response,
+                    confidence=1.0,
+                    extracted_params={
+                        "action": "child_link",
+                        "child_name": decoded["response"],
+                    },
+                    pending_action_id=UUID(decoded["action_id"]),
+                )
             action_map = {"yes": "approve", "no": "dismiss"}
             return IntentResult(
                 intent=IntentType.approval_response,
@@ -350,6 +361,207 @@ def _format_local_events(events: list) -> str:
     return "\n".join(summaries)
 
 
+# ── Child linkage + transport helpers ──────────────────────────────────
+
+
+async def _resolve_and_link_children(
+    session: AsyncSession,
+    family_id: UUID,
+    event: "Event",
+    child_names: list[str],
+    children: list | None = None,
+) -> list[UUID]:
+    """Resolve child names to IDs and link them to the event.
+
+    Args:
+        children: Pre-fetched children list to avoid redundant DB call.
+
+    Returns the list of resolved child_ids (may be empty).
+    """
+    from src.actions.state import resolve_child_names
+
+    if not child_names:
+        return []
+
+    if children is None:
+        children = await children_dal.get_children_for_family(session, family_id)
+    if not children:
+        return []
+
+    child_name_map = {c.name.lower(): c.id for c in children}
+    child_ids = resolve_child_names(child_names, child_name_map)
+
+    if child_ids:
+        await events_dal.link_children_to_event(session, family_id, event.id, child_ids)
+        await session.refresh(event, ["children"])
+
+    return child_ids
+
+
+async def _infer_child_from_activity(
+    session: AsyncSession,
+    family_id: UUID,
+    event_title: str,
+    event_type: str | None,
+    children: list | None = None,
+) -> UUID | None:
+    """Try to infer which child an event belongs to from activity data.
+
+    Args:
+        children: Pre-fetched children list to avoid redundant DB call.
+
+    Checks children.activities arrays and FamilyLearning entries.
+    Returns a single child_id if exactly one child matches, else None.
+    """
+    if children is None:
+        children = await children_dal.get_children_for_family(session, family_id)
+    if not children:
+        return None
+
+    title_lower = event_title.lower()
+    type_lower = (event_type or "").lower()
+
+    # Check children.activities arrays
+    matches = []
+    for child in children:
+        if not child.activities:
+            continue
+        for activity in child.activities:
+            if activity.lower() in title_lower or title_lower in activity.lower():
+                matches.append(child.id)
+                break
+            if type_lower and (activity.lower() in type_lower or type_lower in activity.lower()):
+                matches.append(child.id)
+                break
+
+    if len(matches) == 1:
+        return matches[0]
+
+    # Check FamilyLearning for child_activity associations
+    learnings = await learning_dal.get_learnings_by_category(session, family_id, "child_activity")
+    learning_matches = []
+    for learning in learnings:
+        fact_lower = learning.fact.lower()
+        if (fact_lower in title_lower or title_lower in fact_lower) and learning.entity_id:
+            learning_matches.append(learning.entity_id)
+
+    unique_learning_matches = list(set(learning_matches))
+    if len(unique_learning_matches) == 1:
+        return unique_learning_matches[0]
+
+    return None
+
+
+async def _link_children_and_setup_transport(
+    session: AsyncSession,
+    family_id: UUID,
+    event: "Event",
+    child_names: list[str],
+    event_title: str | None = None,
+    event_type: str | None = None,
+) -> tuple[dict | None, list[str]]:
+    """Link children to event and populate transport defaults.
+
+    If child_names is empty, attempts to infer the child from activity data.
+    Returns (transport_result, message_lines).
+    """
+    message_lines: list[str] = []
+    transport_result = None
+
+    try:
+        # Fetch children once, pass to sub-functions
+        children = await children_dal.get_children_for_family(session, family_id)
+
+        # Resolve explicit child names
+        child_ids = await _resolve_and_link_children(
+            session, family_id, event, child_names, children=children
+        )
+
+        # If no explicit child names, try to infer from activity data
+        if not child_ids and (event_title or event_type):
+            inferred_id = await _infer_child_from_activity(
+                session, family_id, event_title or event.title, event_type,
+                children=children,
+            )
+            if inferred_id:
+                await events_dal.link_children_to_event(
+                    session, family_id, event.id, [inferred_id]
+                )
+                await session.refresh(event, ["children"])
+                child_ids = [inferred_id]
+
+                # Record/reinforce this as a learning for future inference
+                try:
+                    existing = await learning_dal.get_learnings_by_category(
+                        session, family_id, "child_activity"
+                    )
+                    already_known = any(
+                        l.entity_id == inferred_id
+                        and (event_title or "").lower() in l.fact.lower()
+                        for l in existing
+                    )
+                    if not already_known:
+                        child_name = next(
+                            (c.name for c in children if c.id == inferred_id), "child"
+                        )
+                        await learning_dal.create_learning(
+                            session,
+                            family_id=family_id,
+                            category="child_activity",
+                            entity_type="child",
+                            entity_id=inferred_id,
+                            fact=f"{child_name} does {event_title or event.title}",
+                            source="inferred_from_activity",
+                            confidence=0.7,
+                        )
+                except Exception:
+                    logger.debug("Could not record child-activity learning", exc_info=True)
+
+        # Populate transport defaults
+        from src.agents.calendar import populate_transport_defaults
+
+        transport_result = await populate_transport_defaults(session, family_id, event)
+
+        # Build transport message lines
+        if transport_result:
+            action = transport_result.get("action")
+            if action == "auto_populated":
+                message_lines.append("")
+                message_lines.append("🚗 Transport pre-filled from your usual routine.")
+            elif action == "none":
+                message_lines.append("")
+                message_lines.append(
+                    "🚗 Drop-off and pick-up still need to be assigned."
+                )
+            # "auto_assigned_single" and "skipped" produce no message
+
+            # Surface any conflicts
+            for conflict in transport_result.get("conflicts", []):
+                message_lines.append(f"⚠️ {conflict.description}")
+
+    except Exception:
+        logger.debug("Child linkage / transport setup failed", exc_info=True)
+
+    return transport_result, message_lines
+
+
+async def _broadcast_to_other_caregivers(
+    session: AsyncSession,
+    family_id: UUID,
+    sender_id: UUID,
+    notifications: list[str],
+) -> None:
+    """Send notification messages to all caregivers except the sender (best-effort)."""
+    from src.state import families as families_dal
+    from src.whatsapp_client import send_message
+
+    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+    for notif in notifications:
+        for cg in caregivers:
+            if cg.id != sender_id and cg.whatsapp_phone:
+                await send_message(cg.whatsapp_phone, notif)
+
+
 # ── Intent handlers ────────────────────────────────────────────────────
 # Phase 1 implementations — basic versions that will be expanded in later phases.
 
@@ -470,6 +682,12 @@ async def _handle_add_event(
 
     event = await events_dal.create_event(session, family_id, **event_kwargs)
 
+    # Link children and set up transport (handles inference if no child named)
+    transport_result, transport_lines = await _link_children_and_setup_transport(
+        session, family_id, event, extracted.child_names,
+        event_title=extracted.title, event_type=extracted.event_type,
+    )
+
     # Write to Google Calendar (source of truth)
     try:
         from src.actions.gcal import create_calendar_event
@@ -479,15 +697,6 @@ async def _handle_add_event(
             logger.info("Created GCal event(s) %s for '%s'", gcal_ids, extracted.title)
     except Exception:
         logger.exception("Failed to create GCal event for '%s' — saved locally only", extracted.title)
-
-    # Auto-populate transport defaults (best-effort)
-    transport_result = None
-    try:
-        from src.agents.calendar import populate_transport_defaults
-
-        transport_result = await populate_transport_defaults(session, family_id, event)
-    except Exception:
-        logger.debug("Could not populate transport defaults", exc_info=True)
 
     # Build response
     dt_str = extracted.datetime_start.strftime("%a %b %d, %I:%M %p")
@@ -522,6 +731,47 @@ Use "•" prefix."""
             parts.extend(tip_lines)
     except Exception:
         logger.debug("Could not generate prep tips for '%s'", extracted.title)
+
+    # Add transport status lines
+    parts.extend(transport_lines)
+
+    # If no child linked and family has multiple children, ask which kid
+    if not event.children:
+        children = await children_dal.get_children_for_family(session, family_id)
+        if children and len(children) > 1:
+            from src.actions.whatsapp import send_buttons_to_family
+            from src.utils.button_ids import encode_button_id
+
+            # Create a pending action to track the child-linking question
+            child_pending = await pending_dal.create_pending_action(
+                session,
+                family_id=family_id,
+                action_type=PendingActionType.event_confirmation,
+                draft_content="Which child?",
+                context={
+                    "event_id": str(event.id),
+                    "ask_type": "child_link",
+                    "child_options": {c.name: str(c.id) for c in children},
+                },
+                initiated_by=sender_id,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+            child_names_str = " or ".join(c.name for c in children)
+            parts.append(f"\nWhich kid is this for — {child_names_str}?")
+
+            # Send buttons for each child (max 3 buttons per WhatsApp limitation)
+            buttons = [
+                {
+                    "id": encode_button_id("child_link", str(child_pending.id), c.name),
+                    "title": c.name,
+                }
+                for c in children[:3]
+            ]
+            try:
+                await send_buttons_to_family(session, family_id, parts[-1], buttons)
+            except Exception:
+                logger.debug("Could not send child-link buttons", exc_info=True)
 
     return "\n".join(parts)
 
@@ -878,7 +1128,17 @@ async def _handle_assign_transport(
     """Handle assign_transport intent — delegate to Calendar Coordinator."""
     from src.agents.calendar import handle_assignment_claim
 
-    return await handle_assignment_claim(session, family_id, message, sender_id)
+    confirmation, notifications = await handle_assignment_claim(
+        session, family_id, message, sender_id
+    )
+
+    if notifications:
+        try:
+            await _broadcast_to_other_caregivers(session, family_id, sender_id, notifications)
+        except (ImportError, Exception):
+            logger.debug("Could not send transport claim notifications", exc_info=True)
+
+    return confirmation
 
 
 async def _handle_release_transport(
@@ -890,22 +1150,14 @@ async def _handle_release_transport(
 ) -> str:
     """Handle release_transport intent — caregiver can't cover an assignment."""
     from src.agents.calendar import handle_transport_release
-    from src.state import families as families_dal
 
     confirmation, notifications = await handle_transport_release(
         session, family_id, message, sender_id
     )
 
-    # Send notifications to other caregivers (best-effort)
     if notifications:
         try:
-            from src.actions.whatsapp import send_message
-
-            caregivers = await families_dal.get_caregivers_for_family(session, family_id)
-            for notif in notifications:
-                for cg in caregivers:
-                    if cg.id != sender_id and cg.whatsapp_phone:
-                        await send_message(cg.whatsapp_phone, notif)
+            await _broadcast_to_other_caregivers(session, family_id, sender_id, notifications)
         except (ImportError, Exception):
             logger.debug("Could not send transport release notifications", exc_info=True)
 
@@ -957,6 +1209,63 @@ async def _handle_approval_response(
 
     if not pending_action_id:
         return "I'm not sure which action you're responding to. Could you clarify?"
+
+    if action_type == "child_link":
+        # Caregiver answered "Which kid is this for?"
+        child_name = intent.extracted_params.get("child_name", "")
+        pending_action = await pending_dal.get_pending_action(
+            session, family_id, pending_action_id
+        )
+        if not pending_action or pending_action.context.get("ask_type") != "child_link":
+            return "I'm not sure what you're referring to. Could you clarify?"
+
+        child_options = pending_action.context.get("child_options", {})
+        child_id_str = child_options.get(child_name)
+        event_id_str = pending_action.context.get("event_id")
+
+        if not child_id_str or not event_id_str:
+            return f"Sorry, I couldn't match \"{child_name}\" to any of your children."
+
+        child_id = UUID(child_id_str)
+        event_id = UUID(event_id_str)
+
+        # Link the child to the event
+        await events_dal.link_children_to_event(session, family_id, event_id, [child_id])
+
+        # Record this as a learning for future inference
+        transport_lines: list[str] = []
+        event = await events_dal.get_event(session, family_id, event_id)
+        if event:
+            try:
+                await learning_dal.create_learning(
+                    session,
+                    family_id=family_id,
+                    category="child_activity",
+                    entity_type="child",
+                    entity_id=child_id,
+                    fact=f"{child_name} does {event.title}",
+                    source="caregiver_confirmation",
+                    confidence=0.9,
+                )
+            except Exception:
+                logger.debug("Could not record child-activity learning", exc_info=True)
+
+            # Now run transport setup since child is linked
+            await session.refresh(event, ["children"])
+            _, transport_lines = await _link_children_and_setup_transport(
+                session, family_id, event, [],
+                event_title=event.title, event_type=event.type,
+            )
+
+        await pending_dal.resolve_pending(
+            session, family_id=family_id, action_id=pending_action_id,
+            status=PendingActionStatus.approved, resolved_by=sender_id,
+        )
+
+        response = f"Got it — linked to {child_name}! ✓"
+        if transport_lines:
+            response += "\n" + "\n".join(transport_lines)
+        return response
 
     if action_type == "approve":
         # Check if this is an event confirmation — need to create the event
@@ -1086,6 +1395,13 @@ async def _create_event_from_pending(
 
     event = await events_dal.create_event(session, family_id, **event_kwargs)
 
+    # Link children and set up transport
+    child_names_from_data = event_data.get("child_names", [])
+    transport_result, transport_lines = await _link_children_and_setup_transport(
+        session, family_id, event, child_names_from_data,
+        event_title=title, event_type=event_data.get("event_type"),
+    )
+
     # Write to Google Calendar (source of truth)
     try:
         from src.actions.gcal import create_calendar_event
@@ -1095,14 +1411,6 @@ async def _create_event_from_pending(
             logger.info("Created GCal event(s) %s for '%s'", gcal_ids, title)
     except Exception:
         logger.exception("Failed to create GCal event for '%s' — saved locally only", title)
-
-    # Auto-populate transport defaults (best-effort)
-    try:
-        from src.agents.calendar import populate_transport_defaults
-
-        await populate_transport_defaults(session, family_id, event)
-    except Exception:
-        logger.debug("Could not populate transport defaults", exc_info=True)
 
     dt_str = datetime_start.strftime("%a %b %d, %I:%M %p")
     parts = [f"✅ Added to your calendar: *{title}*", f"{dt_str}"]
@@ -1138,6 +1446,9 @@ Use "•" prefix."""
                 parts.extend(tip_lines)
         except Exception:
             logger.debug("Could not generate prep tips for '%s'", title)
+
+    # Add transport status lines
+    parts.extend(transport_lines)
 
     return "\n".join(parts)
 

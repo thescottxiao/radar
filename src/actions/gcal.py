@@ -19,16 +19,41 @@ WATCH_EXPIRY_DAYS = 7
 WATCH_RENEW_INTERVAL_DAYS = 5
 
 
-def _event_to_gcal_body(event: Event) -> dict:
-    """Convert a Radar Event model to a Google Calendar API event body."""
+def _event_to_gcal_body(
+    event: Event, caregiver_map: dict[UUID, str] | None = None
+) -> dict:
+    """Convert a Radar Event model to a Google Calendar API event body.
+
+    Args:
+        event: The Radar Event model.
+        caregiver_map: Optional mapping of caregiver UUID → display name,
+            used to append a transport section to the description.
+    """
     body: dict = {
         "summary": event.title,
         "start": {},
         "end": {},
     }
 
-    if event.description:
-        body["description"] = event.description
+    description = event.description or ""
+
+    # Append transport section if assignments exist
+    if caregiver_map and (event.drop_off_by or event.pick_up_by):
+        # Strip any existing transport section before re-appending
+        transport_marker = "\n\n🚗 Transport"
+        if transport_marker in description:
+            description = description[: description.index(transport_marker)]
+
+        drop_off_name = caregiver_map.get(event.drop_off_by, "unassigned") if event.drop_off_by else "unassigned"
+        pick_up_name = caregiver_map.get(event.pick_up_by, "unassigned") if event.pick_up_by else "unassigned"
+        description += (
+            f"\n\n🚗 Transport\n"
+            f"Drop-off: {drop_off_name}\n"
+            f"Pick-up: {pick_up_name}"
+        )
+
+    if description:
+        body["description"] = description
     if event.location:
         body["location"] = event.location
 
@@ -127,9 +152,12 @@ async def create_calendar_event(
 
     Returns a list of GCal event IDs (one per caregiver calendar).
     """
+    from src.agents.calendar import build_caregiver_name_map
+
     caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+    caregiver_map = build_caregiver_name_map(caregivers)
     gcal_event_ids: list[str] = []
-    body = _event_to_gcal_body(event)
+    body = _event_to_gcal_body(event, caregiver_map=caregiver_map)
 
     for caregiver in caregivers:
         if caregiver.google_refresh_token_encrypted is None:
@@ -174,8 +202,11 @@ async def update_calendar_event(
 
     Uses source_refs to find the GCal event IDs to update.
     """
+    from src.agents.calendar import build_caregiver_name_map
+
     caregivers = await families_dal.get_caregivers_for_family(session, family_id)
-    body = _event_to_gcal_body(event)
+    caregiver_map = build_caregiver_name_map(caregivers)
+    body = _event_to_gcal_body(event, caregiver_map=caregiver_map)
     gcal_ids = event.source_refs or []
 
     for caregiver in caregivers:
