@@ -1,7 +1,8 @@
-"""ICS feed poller and differ.
+"""ICS feed poller, differ, and attachment processor.
 
 Polls ICS feed subscriptions, diffs against stored events, and passes
-new/changed events through the extraction pipeline.
+new/changed events through the extraction pipeline. Also handles ICS
+file attachments from WhatsApp uploads and email.
 """
 
 import logging
@@ -13,12 +14,62 @@ from icalendar import Calendar
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.actions.whatsapp import send_buttons_to_family
 from src.extraction.dedup import deduplicate_event
 from src.extraction.email import ExtractedEvent
 from src.state import events as event_dal
-from src.state.models import Event, EventSource, IcsSubscription
+from src.state.models import Event, EventSource, IcsSubscription, PendingActionType
+from src.state.pending import create_pending_action
+from src.utils.button_ids import encode_button_id
 
 logger = logging.getLogger(__name__)
+
+
+MAX_ICS_SIZE = 1_000_000  # 1 MB
+ICS_MIME_TYPES = {"text/calendar", "application/ics"}
+
+
+def is_ics_file(filename: str, mime_type: str) -> bool:
+    """Check if a file is an ICS calendar file by extension or MIME type."""
+    return filename.lower().endswith(".ics") or mime_type in ICS_MIME_TYPES
+
+
+async def process_ics_attachment(
+    session: AsyncSession,
+    family_id: UUID,
+    content: str,
+) -> list[tuple[Event, bool]]:
+    """Parse an ICS file attachment and run events through dedup.
+
+    Shared entry point for WhatsApp uploads and email attachments.
+    Returns list of (Event, is_new) tuples for the caller to confirm.
+    """
+    # Validate content
+    if len(content) > MAX_ICS_SIZE:
+        logger.warning("ICS content too large (%d bytes), skipping", len(content))
+        return []
+
+    if not content.strip().upper().startswith("BEGIN:VCALENDAR"):
+        logger.info("Content does not look like ICS (no BEGIN:VCALENDAR)")
+        return []
+
+    parsed_events = parse_ics_feed(content)
+    if not parsed_events:
+        return []
+
+    results: list[tuple[Event, bool]] = []
+    for event_data in parsed_events:
+        result = await _dedup_ics_event(session, family_id, event_data)
+        if result is not None:
+            results.append(result)
+
+    logger.info(
+        "Processed ICS attachment for family %s: %d parsed, %d results",
+        family_id,
+        len(parsed_events),
+        len(results),
+    )
+    return results
 
 
 async def poll_ics_feeds(session: AsyncSession) -> None:
@@ -78,28 +129,12 @@ async def _poll_single_feed(
 
     # Parse and diff
     content = resp.text
-    current_events = await parse_ics_feed(content)
+    current_events = parse_ics_feed(content)
     changes = await diff_ics_events(current_events, subscription.family_id, session)
 
     # Process changes through dedup
     for event_data in changes:
-        extracted = ExtractedEvent(
-            title=event_data["title"],
-            event_type=event_data.get("event_type", "other"),
-            datetime_start=event_data.get("datetime_start"),
-            datetime_end=event_data.get("datetime_end"),
-            location=event_data.get("location"),
-            description=event_data.get("description"),
-            confidence=0.9,  # ICS data is generally reliable
-        )
-        source_ref = event_data.get("uid", "")
-        await deduplicate_event(
-            session,
-            subscription.family_id,
-            extracted,
-            source=EventSource.ics_feed,
-            source_ref=source_ref,
-        )
+        await _dedup_ics_event(session, subscription.family_id, event_data)
 
     logger.info(
         "Polled ICS feed %s (family %s): %d events parsed, %d changes",
@@ -110,7 +145,91 @@ async def _poll_single_feed(
     )
 
 
-async def parse_ics_feed(content: str) -> list[dict]:
+async def send_ics_batch_confirmation(
+    session: AsyncSession,
+    family_id: UUID,
+    new_events: list[Event],
+    filename: str,
+    source_label: str,
+    extra_context: dict | None = None,
+) -> None:
+    """Send a single batch confirmation for ICS events via WhatsApp buttons.
+
+    Shared by all ingestion channels (WhatsApp, Gmail, forward-to email).
+    """
+    event_lines = []
+    event_ids = []
+    for event in new_events:
+        event_ids.append(str(event.id))
+        time_str = event.datetime_start.strftime("%b %d, %I:%M %p") if event.datetime_start else "TBD"
+        line = f"  \u2022 {event.title} \u2014 {time_str}"
+        if event.location:
+            line += f" ({event.location})"
+        event_lines.append(line)
+
+    context = {
+        "event_ids": event_ids,
+        "source": "ics_attachment",
+        "filename": filename,
+        "batch": True,
+    }
+    if extra_context:
+        context.update(extra_context)
+
+    pending = await create_pending_action(
+        session,
+        family_id=family_id,
+        action_type=PendingActionType.event_confirmation,
+        draft_content=f"{len(new_events)} events from {source_label}",
+        context=context,
+    )
+
+    body = f"Found {len(new_events)} new event(s) from {source_label}:\n"
+    body += "\n".join(event_lines)
+    body += "\n\nAdd all to your calendar?"
+
+    buttons = [
+        {"id": encode_button_id("event_confirm", str(pending.id), "yes"), "title": "Yes, add all"},
+        {"id": encode_button_id("event_confirm", str(pending.id), "no"), "title": "No, skip"},
+    ]
+
+    await send_buttons_to_family(session, family_id, body, buttons)
+
+
+async def _dedup_ics_event(
+    session: AsyncSession, family_id: UUID, event_data: dict
+) -> tuple[Event, bool] | None:
+    """Convert an ICS event dict to ExtractedEvent and run through dedup."""
+    if not event_data.get("datetime_start"):
+        return None
+
+    extracted = ExtractedEvent(
+        title=event_data["title"],
+        event_type=event_data.get("event_type", "other"),
+        datetime_start=event_data.get("datetime_start"),
+        datetime_end=event_data.get("datetime_end"),
+        location=event_data.get("location"),
+        description=event_data.get("description"),
+        confidence=0.9,
+    )
+    source_ref = event_data.get("uid", "")
+    try:
+        return await deduplicate_event(
+            session,
+            family_id,
+            extracted,
+            source=EventSource.ics_feed,
+            source_ref=source_ref,
+        )
+    except ValueError:
+        logger.warning(
+            "Skipping ICS event '%s' — missing required fields",
+            event_data.get("title"),
+        )
+        return None
+
+
+def parse_ics_feed(content: str) -> list[dict]:
     """Parse an ICS feed into a list of event dictionaries.
 
     Returns list of dicts with keys: uid, title, datetime_start, datetime_end,
