@@ -486,14 +486,12 @@ async def handle_assignment_claim(
             [],
         )
 
-    # Re-fetch events with children eagerly loaded (the originals from
-    # build_family_context may have expired after the LLM + DB calls above)
-    from src.state.events import get_upcoming_events
-    fresh_events = await get_upcoming_events(session, family_id, days=14)
-    events_needing_transport = [
-        ev for ev in fresh_events
-        if not ev.drop_off_by or not ev.pick_up_by
-    ]
+    # Refresh children relationships that may have expired after LLM + DB calls
+    for ev in events_needing_transport:
+        try:
+            await session.refresh(ev, ["children"])
+        except Exception:
+            pass  # stale event — skip it in filtering below
 
     # Filter to events linked to this child
     child_events = [
