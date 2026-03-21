@@ -152,6 +152,14 @@ class ExtractedAssignment(BaseModel):
         default="both",
         description="One of: drop_off, pick_up, both",
     )
+    assigned_caregiver: str | None = Field(
+        default=None,
+        description=(
+            "Name of the caregiver being assigned. If the sender says "
+            "'I'll handle it' this is null (meaning the sender). If they say "
+            "'Nick has dropoff' or 'Dad is doing pickup', this is 'Nick' or 'Dad'."
+        ),
+    )
 
 
 class ExtractedRelease(BaseModel):

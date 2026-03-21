@@ -71,15 +71,21 @@ Recently mentioned events:
 """
 
 ASSIGNMENT_EXTRACTION_SYSTEM = """\
-You are extracting a transport assignment claim from a parent's message.
-The parent is volunteering to handle drop-off/pick-up for a child.
+You are extracting a transport assignment from a parent's message.
+The parent may be volunteering themselves OR assigning another caregiver.
 
 Family children: {children_names}
+Family caregivers: {caregiver_names}
 Upcoming events needing transport:
 {upcoming_events}
 {recent_context}
-IMPORTANT: If the recent conversation mentions a specific event, that is almost certainly
-the event the parent means — even if they don't name it explicitly.
+IMPORTANT:
+- If the recent conversation mentions a specific event, that is almost certainly
+  the event the parent means — even if they don't name it explicitly.
+- If the message names a caregiver (e.g., "Nick has dropoff", "Dad is doing pickup"),
+  set assigned_caregiver to that name. If the sender says "I'll handle it" or doesn't
+  name anyone, leave assigned_caregiver null.
+- A name that matches a caregiver (not a child) should be treated as caregiver assignment.
 """
 
 RELEASE_EXTRACTION_SYSTEM = """\
@@ -463,8 +469,10 @@ async def handle_assignment_claim(
     if memory_lines:
         recent_context = "Recent conversation:\n" + "\n".join(memory_lines)
 
+    caregiver_names = [c.name or c.whatsapp_phone for c in ctx["caregivers"]]
     system = ASSIGNMENT_EXTRACTION_SYSTEM.format(
         children_names=", ".join(ctx["children_names"]) if ctx["children_names"] else "none",
+        caregiver_names=", ".join(caregiver_names) if caregiver_names else "none",
         upcoming_events=upcoming_text,
         recent_context=recent_context,
     )
@@ -518,14 +526,24 @@ async def handle_assignment_claim(
     if not target_event:
         return ("I couldn't find an upcoming event that needs transport assignment.", [])
 
+    # Resolve which caregiver is being assigned
+    assignee_id = sender_id  # default: sender volunteers themselves
+    if extracted.assigned_caregiver:
+        # Look up the named caregiver
+        named = extracted.assigned_caregiver.lower().strip()
+        for cg in ctx["caregivers"]:
+            if cg.name and cg.name.lower() == named:
+                assignee_id = cg.id
+                break
+
     # Apply assignment
     update_kwargs = {}
-    sender_name = _caregiver_display_name(ctx["caregivers"], sender_id)
+    assignee_name = _caregiver_display_name(ctx["caregivers"], assignee_id)
 
     if extracted.role in ("drop_off", "both"):
-        update_kwargs["drop_off_by"] = sender_id
+        update_kwargs["drop_off_by"] = assignee_id
     if extracted.role in ("pick_up", "both"):
-        update_kwargs["pick_up_by"] = sender_id
+        update_kwargs["pick_up_by"] = assignee_id
 
     if update_kwargs:
         await events_dal.update_event(
@@ -539,7 +557,7 @@ async def handle_assignment_claim(
 
     time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
     response = (
-        f"✓ {sender_name or 'You'} — {role_text} "
+        f"✓ {assignee_name or 'You'} — {role_text} "
         f"for {child.name} at \"{target_event.title}\" on {time_str}."
     )
 
@@ -556,7 +574,7 @@ async def handle_assignment_claim(
 
     # Build notification for other caregivers
     notification = (
-        f"{sender_name or 'A caregiver'} is handling {role_text} "
+        f"{assignee_name or 'A caregiver'} is handling {role_text} "
         f"for {child.name} at \"{target_event.title}\" on {time_str}."
     )
     if remaining_text:
@@ -564,7 +582,7 @@ async def handle_assignment_claim(
 
     # Sibling conflict check
     all_conflicts = await check_all_transport_conflicts(
-        session, family_id, target_event, caregiver_filter=sender_id
+        session, family_id, target_event, caregiver_filter=assignee_id
     )
 
     conflict_text = ""
