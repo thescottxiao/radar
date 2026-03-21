@@ -87,15 +87,17 @@ def _make_learning(family_id, fact="Emma prefers the blue soccer jersey"):
 
 class TestDailyDigest:
     @patch("src.agents.reminders.generate")
+    @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.event_dal")
     async def test_generates_digest_with_events(
-        self, mock_event_dal, mock_generate, mock_session, family_id
+        self, mock_event_dal, mock_families_dal, mock_generate, mock_session, family_id
     ):
         """Daily digest generates content when there are today's events."""
         events = [_make_event(family_id, "Soccer Practice", hours_from_now=4)]
 
         mock_event_dal.get_events_in_range = AsyncMock(side_effect=[events, events])
         mock_event_dal.get_action_items_due_soon = AsyncMock(return_value=[])
+        mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
         mock_generate.return_value = "Good morning! Here's your day:\n- 11:00 AM: Soccer Practice at Westfield Park"
 
         result = await generate_daily_digest(mock_session, family_id)
@@ -136,9 +138,10 @@ class TestDailyDigest:
         assert "permission slip" in call_args.kwargs.get("prompt", call_args.args[0] if call_args.args else "")
 
     @patch("src.agents.reminders.generate")
+    @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.event_dal")
     async def test_includes_unclaimed_transport(
-        self, mock_event_dal, mock_generate, mock_session, family_id
+        self, mock_event_dal, mock_families_dal, mock_generate, mock_session, family_id
     ):
         """Daily digest flags events with no transport assigned."""
         event = _make_event(
@@ -148,6 +151,7 @@ class TestDailyDigest:
 
         mock_event_dal.get_events_in_range = AsyncMock(side_effect=[[], [event]])
         mock_event_dal.get_action_items_due_soon = AsyncMock(return_value=[])
+        mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
         mock_generate.return_value = "Transport needed:\n- Piano Lesson: needs drop-off and pick-up"
 
         result = await generate_daily_digest(mock_session, family_id)

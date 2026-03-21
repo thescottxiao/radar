@@ -465,8 +465,108 @@ FamilyLearning {
   - School event → permission slips, payments, items to bring
   - Camp → registration, medical forms, packing list
 - **Gear tracking:** Maintain gear_inventory on Child records. Surface gaps at schedule transitions: "Does Jake still have cleats that fit? He was size 3 last season."
-- **Transportation planning:** For recurring schedules, propose a standing transport schedule. For one-off events, surface assignment question to group.
-- **Assignment nudging:** If a transport assignment or task is unclaimed and the event is approaching, nudge the group again. Timing is context-aware (not a fixed timer): urgency scales with proximity to event.
+
+#### 6.5.1 Transport Coordination
+
+**Purpose:** Coordinate which caregiver handles drop-off and pick-up for child events.
+
+**Gating — when transport coordination applies:**
+
+Transport coordination only runs when ALL of these are true:
+- The family has at least one child (`family.children` is non-empty)
+- The event has a `child_id` (it's a child event, not a parent/family event)
+- The family has 2+ active caregivers
+
+If the family has only 1 active caregiver, transport is auto-assigned to that caregiver silently — no prompts, no "who's handling?" questions. If the family has no children, the entire transport subsystem is skipped.
+
+**Transport assignment on event creation:**
+
+When an event is created with a `child_id`:
+1. Check if the event matches a `RecurringSchedule` that has confirmed transport routines (see Routine Inference below).
+2. If match found → auto-populate `drop_off_by` and/or `pick_up_by` from the routine defaults.
+3. If no match → leave transport unassigned. The event enters the unclaimed transport reminder pipeline.
+4. After any assignment (auto or claimed), run the sibling conflict check.
+
+**Claiming transport via conversation:**
+
+Drop-off and pick-up are independent assignments — they can be claimed by different caregivers. Caregivers assign themselves via free text:
+```
+Caregiver A: I'll drop Emma at soccer
+Bot: ✓ You're on drop-off for Emma's soccer Tuesday at 4pm. Pick-up is still unassigned.
+
+Caregiver B: I can grab her after
+Bot: ✓ You're on pick-up for Emma's soccer Tuesday at 4pm.
+```
+
+If a caregiver doesn't specify a role, it defaults to "both":
+```
+Caregiver: I'll take Emma to soccer
+Bot: ✓ You're on drop-off and pick-up for Emma's soccer Tuesday at 4pm.
+```
+
+The `assign_transport` intent extracts child name, event hint, and role (drop_off, pick_up, or both) using the `ExtractedAssignment` schema. Matching uses the same two-tier context strategy as other event handlers (conversation context → GCal search).
+
+**Swap flow — releasing a routine assignment:**
+
+When a caregiver can't cover their usual assignment:
+```
+Caregiver: I can't do pickup Thursday
+Bot: Got it — Thursday soccer pickup is now unassigned.
+     [to all caregivers]: Thursday soccer pickup for Jake needs someone. Who can cover?
+```
+
+The swap clears the assignment on that **specific event instance only** — the routine default stays intact for future weeks. The event then enters the normal unclaimed transport reminder pipeline.
+
+**Sibling conflict detection:**
+
+Triggered any time transport is assigned (auto-populated from routine or claimed by caregiver). Drop-off and pick-up are checked independently — a caregiver can drop off one child and pick up another if the times don't overlap. Checks for:
+- Another event for a **different child** in the same family
+- With **overlapping time** (±30 minute window)
+- At a **different location**
+- Where the **same caregiver** is assigned to the **same role** (both doing drop-off, or both doing pick-up) for both events
+
+If conflict found, flag it to all caregivers:
+```
+Bot: Heads up — Mom is assigned to drop off Emma at soccer (4:00 PM, Fieldhouse)
+     and drop off Jake at piano (4:15 PM, Music Center). One of these needs a different driver.
+```
+
+The system flags the conflict only. It does not propose which caregiver should swap.
+
+**Unclaimed transport reminder pipeline (fixed cadence):**
+
+| Timing | Channel | Message |
+|--------|---------|---------|
+| Daily digest (morning) | Digest line item | "Soccer at 4pm Tuesday — drop-off: Mom, pick-up: unassigned" |
+| 48 hours before event | Direct message to all caregivers | "Jake's soccer tomorrow at 4pm still needs pick-up assigned. Who's handling it?" |
+| 4 hours before event | Urgent message to all caregivers | "⚠️ Jake's soccer at 4pm TODAY still has no pick-up assigned!" |
+
+Escalation cadence is fixed — not configurable per family.
+
+#### 6.5.2 Transport Routine Inference
+
+**Purpose:** Learn recurring transport patterns from caregiver behavior, rather than asking upfront.
+
+**Mechanism:** Uses the FamilyLearning lifecycle (see Section 11).
+
+1. **Track claims:** Each time a caregiver claims transport for an event tied to a `RecurringSchedule`, record the tuple: (caregiver, recurring_schedule, day_of_week, role). Drop-off and pick-up are tracked as **separate tuples** — a family may have one caregiver who always drops off and a different one who always picks up.
+2. **Detect pattern:** After 3 consistent claims by the same caregiver for the same (recurring_schedule, day_of_week, role), create a `FamilyLearning` entry with `confirmed = false`:
+   - Category: `transport_routine`
+   - Value: "Mom handles Tuesday soccer drop-off" or "Grandma handles Tuesday soccer pick-up"
+   - Each role generates its own independent learning entry
+3. **Surface for confirmation:** In the next weekly Sunday summary:
+   ```
+   Bot: I've noticed some transport patterns:
+        • Mom always handles Tuesday soccer drop-off
+        • Grandma always handles Tuesday soccer pick-up
+        I'll keep assigning those automatically. Correct me if anything changes.
+   ```
+4. **Confirm or correct:**
+   - No correction → `confirmed = true`. Future events from that recurring schedule auto-populate `drop_off_by` and/or `pick_up_by` from the respective routine.
+   - Correction ("actually Dad does Tuesday drop-off now") → update that specific learning entry, reset the claim counter for the old caregiver, begin tracking the new one. The other role's routine is unaffected.
+5. **Write defaults:** When a transport routine learning is confirmed, update `RecurringSchedule.default_drop_off_caregiver` or `default_pick_up_caregiver` accordingly. These are independent fields — confirming a drop-off routine does not affect the pick-up default, and vice versa.
+
+**No upfront questions:** The system never asks "who usually handles pickup?" during onboarding or recurring schedule creation. It observes and confirms passively.
 
 ### 6.6 Research Agent
 
@@ -819,7 +919,8 @@ After graduation, the learning row is marked `graduated = true` — history is p
 - Child's friends (from playdate requests, party invites)
 - Other parents' contact info (from email metadata)
 - Coaches and teachers (from email senders)
-- Schedule patterns (Mom usually does Tuesday pickup, Dad does Thursday)
+- Gear inventory (from purchase confirmations, "need new cleats" conversations)
+- Transport routines (Mom usually does Tuesday soccer pickup, Dad does Thursday piano drop-off) — inferred from 3 consistent claims, confirmed via weekly summary (see Section 6.5.2)
 - Budget norms (typical gift spending range, camp budget)
 
 **Preferences** (stay as freeform strings or structured fields):
@@ -938,6 +1039,10 @@ All gap detection outputs are SUGGEST mode — they present options and ask, nev
 | Update Event Registry (from email) | CONFIRM | Interactive Yes/No buttons; event created only on caregiver confirmation |
 | Update Family Profiles | AUTO | Silent learning, weekly summary for review |
 | Track recurring schedules and exceptions | AUTO | After initial confirmation |
+| Auto-assign transport from routine | AUTO | Populates drop_off_by/pick_up_by from confirmed routines |
+| Auto-assign transport (single caregiver) | AUTO | Silent, no prompts when only one caregiver exists |
+| Flag sibling transport conflict | AUTO | Flags only, does not propose resolution |
+| Nudge group for unclaimed transport | AUTO | Fixed cadence: digest → 48h → 4h escalation |
 | Nudge group for unclaimed tasks | AUTO | Context-aware timing |
 | Generate and update prep checklists | AUTO | Based on event type |
 | Send emails to external parties | SUGGEST | Draft shown, caregiver approves |

@@ -29,7 +29,8 @@ Intent categories:
 - query_schedule: Asking about upcoming events or schedule (e.g. "What's on this weekend?")
 - modify_event: Wants to change an existing calendar event (e.g. "Move soccer to 3pm")
 - cancel_event: Wants to cancel an event (e.g. "Cancel the dentist appointment")
-- assign_transport: Assigning drop-off or pick-up (e.g. "I'll take Emma to soccer")
+- assign_transport: Assigning drop-off or pick-up (e.g. "I'll take Emma to soccer", "I'll drop her off")
+- release_transport: Releasing/swapping a transport assignment (e.g. "I can't do pickup Thursday", "someone else needs to handle drop-off Tuesday", "I can't take Jake")
 - rsvp_response: Responding to an RSVP prompt (e.g. "Yes to the birthday party")
 - add_child_info: Providing child info (e.g. "Jake's shoe size is 3")
 - approval_response: Responding to a pending action awaiting approval — includes approving, dismissing, providing details, correcting info, or updating prep tasks. extracted_params must include "action": "approve", "dismiss", or "edit_instruction"
@@ -240,6 +241,7 @@ async def route_intent(
         IntentType.modify_event: _handle_modify_event,
         IntentType.cancel_event: _handle_cancel_event,
         IntentType.assign_transport: _handle_assign_transport,
+        IntentType.release_transport: _handle_release_transport,
         IntentType.rsvp_response: _handle_rsvp_response,
         IntentType.add_child_info: _handle_add_child_info,
         IntentType.approval_response: _handle_approval_response,
@@ -477,6 +479,15 @@ async def _handle_add_event(
             logger.info("Created GCal event(s) %s for '%s'", gcal_ids, extracted.title)
     except Exception:
         logger.exception("Failed to create GCal event for '%s' — saved locally only", extracted.title)
+
+    # Auto-populate transport defaults (best-effort)
+    transport_result = None
+    try:
+        from src.agents.calendar import populate_transport_defaults
+
+        transport_result = await populate_transport_defaults(session, family_id, event)
+    except Exception:
+        logger.debug("Could not populate transport defaults", exc_info=True)
 
     # Build response
     dt_str = extracted.datetime_start.strftime("%a %b %d, %I:%M %p")
@@ -864,8 +875,41 @@ async def _handle_assign_transport(
     message: str,
     sender_id: UUID,
 ) -> str:
-    """Handle assign_transport intent."""
-    return "Got it, I'll note that transport assignment. Which event is this for?"
+    """Handle assign_transport intent — delegate to Calendar Coordinator."""
+    from src.agents.calendar import handle_assignment_claim
+
+    return await handle_assignment_claim(session, family_id, message, sender_id)
+
+
+async def _handle_release_transport(
+    session: AsyncSession,
+    family_id: UUID,
+    intent: IntentResult,
+    message: str,
+    sender_id: UUID,
+) -> str:
+    """Handle release_transport intent — caregiver can't cover an assignment."""
+    from src.agents.calendar import handle_transport_release
+    from src.state import families as families_dal
+
+    confirmation, notifications = await handle_transport_release(
+        session, family_id, message, sender_id
+    )
+
+    # Send notifications to other caregivers (best-effort)
+    if notifications:
+        try:
+            from src.actions.whatsapp import send_message
+
+            caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+            for notif in notifications:
+                for cg in caregivers:
+                    if cg.id != sender_id and cg.whatsapp_phone:
+                        await send_message(cg.whatsapp_phone, notif)
+        except (ImportError, Exception):
+            logger.debug("Could not send transport release notifications", exc_info=True)
+
+    return confirmation
 
 
 async def _handle_rsvp_response(
@@ -1051,6 +1095,14 @@ async def _create_event_from_pending(
             logger.info("Created GCal event(s) %s for '%s'", gcal_ids, title)
     except Exception:
         logger.exception("Failed to create GCal event for '%s' — saved locally only", title)
+
+    # Auto-populate transport defaults (best-effort)
+    try:
+        from src.agents.calendar import populate_transport_defaults
+
+        await populate_transport_defaults(session, family_id, event)
+    except Exception:
+        logger.debug("Could not populate transport defaults", exc_info=True)
 
     dt_str = datetime_start.strftime("%a %b %d, %I:%M %p")
     parts = [f"✅ Added to your calendar: *{title}*", f"{dt_str}"]

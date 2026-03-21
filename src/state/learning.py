@@ -80,6 +80,18 @@ async def confirm_learnings(
     await session.flush()
 
 
+async def get_learnings_by_category(
+    session: AsyncSession, family_id: UUID, category: str
+) -> list[FamilyLearning]:
+    result = await session.execute(
+        select(FamilyLearning).where(
+            FamilyLearning.family_id == family_id,
+            FamilyLearning.category == category,
+        ).order_by(FamilyLearning.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
 async def get_confirmed_learnings(
     session: AsyncSession, family_id: UUID
 ) -> list[FamilyLearning]:
@@ -93,6 +105,25 @@ async def get_confirmed_learnings(
         ).order_by(FamilyLearning.category, FamilyLearning.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def get_learning_by_source(
+    session: AsyncSession,
+    family_id: UUID,
+    category: str,
+    entity_id: UUID,
+    source: str,
+) -> FamilyLearning | None:
+    """Find a specific learning entry by category, entity_id, and exact source match."""
+    result = await session.execute(
+        select(FamilyLearning).where(
+            FamilyLearning.family_id == family_id,
+            FamilyLearning.category == category,
+            FamilyLearning.entity_id == entity_id,
+            FamilyLearning.source == source,
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 _PREF_CATEGORIES = {

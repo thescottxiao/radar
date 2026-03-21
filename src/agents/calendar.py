@@ -16,6 +16,7 @@ from src.agents.schemas import (
     ExtractedAssignment,
     ExtractedCorrection,
     ExtractedEvent,
+    ExtractedRelease,
     ExtractedUpdate,
     ResolvedEvent,
 )
@@ -23,7 +24,10 @@ from src.agents.context import build_family_context
 from src.llm import extract, generate
 from src.state import children as children_dal
 from src.state import events as events_dal
+from src.state import families as families_dal
+from src.state import learning as learning_dal
 from src.state import memory as memory_dal
+from src.state import schedules as schedules_dal
 from src.state.models import Event, EventSource
 
 logger = logging.getLogger(__name__)
@@ -72,6 +76,15 @@ The parent is volunteering to handle drop-off/pick-up for a child.
 
 Family children: {children_names}
 Upcoming events needing transport:
+{upcoming_events}
+"""
+
+RELEASE_EXTRACTION_SYSTEM = """\
+You are extracting a transport release from a parent's message.
+The parent is saying they can't cover a drop-off or pick-up they were assigned to.
+
+Family children: {children_names}
+Upcoming events with transport assigned:
 {upcoming_events}
 """
 
@@ -458,29 +471,34 @@ async def handle_assignment_claim(
             f"Your children are: {', '.join(ctx['children_names'])}."
         )
 
+    # Filter to events linked to this child
+    child_events = [
+        ev for ev in events_needing_transport
+        if ev.children and any(ec.child_id == child.id for ec in ev.children)
+    ]
+
     # Find the target event (if hinted) or the next event for that child
     target_event = None
     if extracted.event_hint:
         target_event = await _find_target_event(
-            session, family_id, extracted.event_hint, events_needing_transport
+            session, family_id, extracted.event_hint,
+            child_events or events_needing_transport,
         )
 
+    if not target_event and child_events:
+        target_event = child_events[0]
+
     if not target_event:
-        # Find next event that involves this child or has no children linked
-        for ev in events_needing_transport:
-            target_event = ev
-            break
+        # Fall back to any event needing transport
+        if events_needing_transport:
+            target_event = events_needing_transport[0]
 
     if not target_event:
         return "I couldn't find an upcoming event that needs transport assignment."
 
     # Apply assignment
     update_kwargs = {}
-    sender_name = None
-    for c in ctx["caregivers"]:
-        if c.id == sender_id:
-            sender_name = c.name or c.whatsapp_phone
-            break
+    sender_name = _caregiver_display_name(ctx["caregivers"], sender_id)
 
     if extracted.role in ("drop_off", "both"):
         update_kwargs["drop_off_by"] = sender_id
@@ -491,18 +509,58 @@ async def handle_assignment_claim(
         await events_dal.update_event(
             session, family_id, target_event.id, **update_kwargs
         )
+        # Refresh event fields for conflict check
+        for k, v in update_kwargs.items():
+            setattr(target_event, k, v)
 
-    role_text = {
-        "drop_off": "drop-off",
-        "pick_up": "pick-up",
-        "both": "drop-off and pick-up",
-    }.get(extracted.role, "transport")
+    role_text = _role_label(extracted.role)
 
+    time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
     response = (
-        f"Got it! {sender_name or 'You'} will handle {role_text} "
-        f"for {child.name} at \"{target_event.title}\" on "
-        f"{target_event.datetime_start.strftime('%A, %B %d at %I:%M %p')}."
+        f"✓ {sender_name or 'You'} — {role_text} "
+        f"for {child.name} at \"{target_event.title}\" on {time_str}."
     )
+
+    # Show what's still unassigned
+    remaining = []
+    if not target_event.drop_off_by:
+        remaining.append("drop-off")
+    if not target_event.pick_up_by:
+        remaining.append("pick-up")
+    if remaining:
+        response += f" {' and '.join(remaining).capitalize()} is still unassigned."
+
+    # Sibling conflict check
+    all_conflicts = await check_all_transport_conflicts(
+        session, family_id, target_event, caregiver_filter=sender_id
+    )
+
+    if all_conflicts:
+        response += "\n\n⚠️ Heads up:"
+        for c in all_conflicts:
+            response += f"\n• {c.description}"
+
+    # Track claim for routine inference
+    try:
+        for role_key in ("drop_off", "pick_up"):
+            if role_key in update_kwargs:
+                await track_transport_claim(
+                    session, family_id, sender_id, target_event, role_key,
+                    caregivers=ctx["caregivers"],
+                )
+    except Exception:
+        logger.debug("Could not track transport claim for routine inference", exc_info=True)
+
+    # Best-effort GCal sync
+    try:
+        from src.actions.gcal import update_gcal_event
+
+        for caregiver in ctx["caregivers"]:
+            if caregiver.google_refresh_token_encrypted:
+                await update_gcal_event(session, caregiver.id, target_event)
+                break
+    except (ImportError, Exception) as exc:
+        logger.debug("Could not sync transport assignment to GCal: %s", exc)
 
     return response
 
@@ -586,6 +644,502 @@ async def detect_conflicts(
             )
 
     return conflicts
+
+
+# ── Transport coordination ─────────────────────────────────────────────
+
+
+def _role_label(role: str) -> str:
+    """Convert internal role key to display label."""
+    return {"drop_off": "drop-off", "pick_up": "pick-up", "both": "drop-off and pick-up"}.get(
+        role, "transport"
+    )
+
+
+def _caregiver_display_name(caregivers: list, caregiver_id: UUID) -> str | None:
+    """Look up a caregiver's display name from a list."""
+    for c in caregivers:
+        if c.id == caregiver_id:
+            return c.name or c.whatsapp_phone
+    return None
+
+
+def build_caregiver_name_map(caregivers: list) -> dict[UUID, str]:
+    """Build {caregiver_id: display_name} mapping."""
+    return {c.id: (c.name or c.whatsapp_phone) for c in caregivers}
+
+
+async def check_transport_gating(
+    session: AsyncSession, family_id: UUID, event: Event
+) -> tuple[str | None, list]:
+    """Check whether transport coordination should run for this event.
+
+    Returns (reason, caregivers) — reason is a string if transport should be
+    skipped, or None if coordination should proceed. Caregivers list is returned
+    to avoid redundant queries by callers.
+    """
+    children = await children_dal.get_children_for_family(session, family_id)
+    if not children:
+        return "no_children", []
+
+    # Check if event has linked children
+    if not event.children:
+        # Eagerly loaded relationship may be empty — that means no child link
+        return "no_child_on_event", []
+
+    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+    if len(caregivers) < 2:
+        return "single_caregiver", caregivers
+
+    return None, caregivers
+
+
+async def auto_assign_single_caregiver(
+    session: AsyncSession, family_id: UUID, event_id: UUID, caregiver_id: UUID
+) -> None:
+    """Silently assign both transport roles to the sole caregiver."""
+    await events_dal.update_event(
+        session, family_id, event_id,
+        drop_off_by=caregiver_id,
+        pick_up_by=caregiver_id,
+    )
+
+
+async def detect_sibling_transport_conflicts(
+    session: AsyncSession,
+    family_id: UUID,
+    event: Event,
+    role: str,
+    caregiver_id: UUID,
+) -> list[Conflict]:
+    """Check if the assigned caregiver has an overlapping transport duty
+    for a *different* child at a *different* location for the *same role*.
+
+    Args:
+        role: "drop_off" or "pick_up"
+
+    Note: Prefer ``check_all_transport_conflicts`` when checking both roles
+    on the same event — it fetches nearby events once instead of twice.
+    """
+    event_start = event.datetime_start
+    window_start = event_start - timedelta(minutes=30)
+    window_end = event_start + timedelta(minutes=30)
+
+    nearby_events = await events_dal.get_events_in_range(
+        session, family_id, window_start, window_end
+    )
+
+    return _check_sibling_conflicts_against(event, role, caregiver_id, nearby_events)
+
+
+async def check_all_transport_conflicts(
+    session: AsyncSession,
+    family_id: UUID,
+    event: Event,
+    caregiver_filter: UUID | None = None,
+) -> list[Conflict]:
+    """Check both transport roles on an event for sibling conflicts.
+
+    Fetches nearby events once and checks both drop_off and pick_up roles.
+    If caregiver_filter is provided, only checks roles assigned to that caregiver.
+    """
+    # Pre-fetch nearby events once for both role checks
+    event_start = event.datetime_start
+    window_start = event_start - timedelta(minutes=30)
+    window_end = event_start + timedelta(minutes=30)
+    nearby_events = await events_dal.get_events_in_range(
+        session, family_id, window_start, window_end
+    )
+
+    all_conflicts: list[Conflict] = []
+    for role_key in ("drop_off", "pick_up"):
+        cg_id = getattr(event, f"{role_key}_by")
+        if not cg_id:
+            continue
+        if caregiver_filter and cg_id != caregiver_filter:
+            continue
+        conflicts = _check_sibling_conflicts_against(
+            event, role_key, cg_id, nearby_events
+        )
+        all_conflicts.extend(conflicts)
+
+    return all_conflicts
+
+
+def _check_sibling_conflicts_against(
+    event: Event,
+    role: str,
+    caregiver_id: UUID,
+    nearby_events: list[Event],
+) -> list[Conflict]:
+    """Check for sibling transport conflicts against pre-fetched nearby events."""
+    conflicts: list[Conflict] = []
+    event_child_ids = {ec.child_id for ec in event.children} if event.children else set()
+
+    for other in nearby_events:
+        if other.id == event.id:
+            continue
+
+        other_child_ids = {ec.child_id for ec in other.children} if other.children else set()
+        if not other_child_ids or other_child_ids == event_child_ids:
+            continue
+        if other_child_ids & event_child_ids:
+            continue
+
+        if not event.location or not other.location:
+            continue
+        if event.location.lower().strip() == other.location.lower().strip():
+            continue
+
+        other_caregiver = (
+            other.drop_off_by if role == "drop_off" else other.pick_up_by
+        )
+        if other_caregiver != caregiver_id:
+            continue
+
+        role_label = _role_label(role)
+        description = (
+            f"Same caregiver is assigned to {role_label} at "
+            f"\"{event.title}\" ({event.datetime_start.strftime('%I:%M %p')}, {event.location}) "
+            f"and \"{other.title}\" ({other.datetime_start.strftime('%I:%M %p')}, "
+            f"{other.location}). One of these needs a different driver."
+        )
+
+        conflicts.append(
+            Conflict(
+                existing_event_id=other.id,
+                existing_event_title=other.title,
+                existing_event_start=other.datetime_start,
+                existing_event_end=other.datetime_end,
+                existing_event_location=other.location,
+                conflict_type="sibling_transport_conflict",
+                description=description,
+                child_names=[],
+            )
+        )
+
+    return conflicts
+
+
+async def populate_transport_defaults(
+    session: AsyncSession, family_id: UUID, event: Event
+) -> dict:
+    """Auto-populate transport assignments for a newly created event.
+
+    Returns a summary dict with keys: action, conflicts.
+    """
+    result: dict = {"action": "none", "conflicts": []}
+
+    gate, caregivers = await check_transport_gating(session, family_id, event)
+
+    if gate == "no_children" or gate == "no_child_on_event":
+        result["action"] = "skipped"
+        return result
+
+    if gate == "single_caregiver":
+        if caregivers:
+            await auto_assign_single_caregiver(
+                session, family_id, event.id, caregivers[0].id
+            )
+            result["action"] = "auto_assigned_single"
+        return result
+
+    # 2+ caregivers — check for recurring schedule defaults
+    if event.recurring_schedule_id:
+        schedule = await schedules_dal.get_recurring_schedule(
+            session, family_id, event.recurring_schedule_id
+        )
+        if schedule:
+            update_kwargs = {}
+            if schedule.default_drop_off_caregiver and not event.drop_off_by:
+                update_kwargs["drop_off_by"] = schedule.default_drop_off_caregiver
+            if schedule.default_pick_up_caregiver and not event.pick_up_by:
+                update_kwargs["pick_up_by"] = schedule.default_pick_up_caregiver
+
+            if update_kwargs:
+                await events_dal.update_event(
+                    session, family_id, event.id, **update_kwargs
+                )
+                # Refresh event fields for conflict check
+                for k, v in update_kwargs.items():
+                    setattr(event, k, v)
+                result["action"] = "auto_populated"
+
+    # Run sibling conflict check for any assigned roles
+    result["conflicts"] = await check_all_transport_conflicts(
+        session, family_id, event
+    )
+
+    return result
+
+
+def format_transport_status(
+    event: Event, caregiver_map: dict[UUID, str]
+) -> str | None:
+    """Format transport assignment status for an event.
+
+    Returns None if the event has no children or if both roles are assigned
+    (nothing to act on). Otherwise returns a string like
+    "drop-off: Mom, pick-up: unassigned".
+    caregiver_map: {caregiver_id: display_name}
+    """
+    if not event.children:
+        return None
+
+    parts = []
+    if event.drop_off_by:
+        name = caregiver_map.get(event.drop_off_by, "someone")
+        parts.append(f"drop-off: {name}")
+    else:
+        parts.append("drop-off: unassigned")
+
+    if event.pick_up_by:
+        name = caregiver_map.get(event.pick_up_by, "someone")
+        parts.append(f"pick-up: {name}")
+    else:
+        parts.append("pick-up: unassigned")
+
+    # Only show if at least one role is unassigned
+    if event.drop_off_by and event.pick_up_by:
+        return None
+
+    return ", ".join(parts)
+
+
+async def handle_transport_release(
+    session: AsyncSession,
+    family_id: UUID,
+    message: str,
+    sender_id: UUID,
+) -> tuple[str, list[str]]:
+    """Handle a transport release like 'I can't do pickup Thursday'.
+
+    Returns (confirmation_message, [notification_messages_for_other_caregivers]).
+    """
+    ctx = await _build_family_context(session, family_id)
+
+    # Filter to events where this caregiver is assigned
+    assigned_events = [
+        ev for ev in ctx["upcoming"]
+        if ev.drop_off_by == sender_id or ev.pick_up_by == sender_id
+    ]
+
+    if not assigned_events:
+        return (
+            "I don't see any upcoming transport assignments for you to release.",
+            [],
+        )
+
+    upcoming_text = _format_events_for_prompt(assigned_events)
+
+    system = RELEASE_EXTRACTION_SYSTEM.format(
+        children_names=", ".join(ctx["children_names"]) if ctx["children_names"] else "none",
+        upcoming_events=upcoming_text,
+    )
+
+    extracted = await extract(
+        prompt=message,
+        system=system,
+        schema=ExtractedRelease,
+    )
+
+    # Find the target event
+    target_event = None
+    if extracted.event_hint:
+        target_event = await _find_target_event(
+            session, family_id, extracted.event_hint, assigned_events
+        )
+
+    if not target_event:
+        # Try matching by child name + role
+        if extracted.child_name:
+            child = await children_dal.fuzzy_match_child(
+                session, family_id, extracted.child_name
+            )
+            if child:
+                for ev in assigned_events:
+                    child_ids = {ec.child_id for ec in ev.children} if ev.children else set()
+                    if child.id in child_ids:
+                        target_event = ev
+                        break
+
+    if not target_event:
+        # Fall back to first assigned event
+        target_event = assigned_events[0] if assigned_events else None
+
+    if not target_event:
+        return ("I couldn't find a matching transport assignment to release.", [])
+
+    # Verify sender actually holds the assignment for the requested role
+    update_kwargs = {}
+    released_roles = []
+
+    if extracted.role in ("drop_off", "both") and target_event.drop_off_by == sender_id:
+        update_kwargs["drop_off_by"] = None
+        released_roles.append("drop-off")
+    if extracted.role in ("pick_up", "both") and target_event.pick_up_by == sender_id:
+        update_kwargs["pick_up_by"] = None
+        released_roles.append("pick-up")
+
+    if not update_kwargs:
+        return (
+            "You don't appear to be assigned to that role for this event.",
+            [],
+        )
+
+    await events_dal.update_event(
+        session, family_id, target_event.id, **update_kwargs
+    )
+
+    sender_name = _caregiver_display_name(ctx["caregivers"], sender_id)
+
+    role_text = " and ".join(released_roles)
+    time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
+
+    confirmation = (
+        f"Got it — {role_text} for \"{target_event.title}\" on {time_str} "
+        f"is now unassigned."
+    )
+
+    # Build notification for other caregivers
+    notification = (
+        f"{role_text.capitalize()} for \"{target_event.title}\" on {time_str} "
+        f"needs someone. Who can cover?"
+    )
+
+    return (confirmation, [notification])
+
+
+async def track_transport_claim(
+    session: AsyncSession,
+    family_id: UUID,
+    caregiver_id: UUID,
+    event: Event,
+    role: str,
+    *,
+    caregivers: list | None = None,
+) -> None:
+    """Track a transport claim for routine inference.
+
+    After 3 consistent claims by the same caregiver for the same
+    (recurring_schedule, day_of_week, role), creates an unconfirmed
+    FamilyLearning entry (category: transport_routine).
+    """
+    if not event.recurring_schedule_id:
+        return
+
+    day_of_week = event.datetime_start.strftime("%A")  # e.g. "Tuesday"
+    source_key = f"caregiver:{caregiver_id}|day:{day_of_week}|role:{role}"
+
+    # Look for existing counter
+    counter = await learning_dal.get_learning_by_source(
+        session,
+        family_id,
+        category="transport_claim_counter",
+        entity_id=event.recurring_schedule_id,
+        source=source_key,
+    )
+
+    if counter:
+        # Parse count from fact field
+        current_count = int(counter.fact.split(":")[-1]) if ":" in counter.fact else 0
+        new_count = current_count + 1
+        counter.fact = f"count:{new_count}"
+        await session.flush()
+    else:
+        new_count = 1
+        await learning_dal.create_learning(
+            session,
+            family_id,
+            category="transport_claim_counter",
+            fact=f"count:{new_count}",
+            source=source_key,
+            confidence=0.0,
+            entity_type="recurring_schedule",
+            entity_id=event.recurring_schedule_id,
+        )
+
+    # At threshold, create the transport_routine learning
+    if new_count == 3:
+        # Look up caregiver name and schedule for human-readable fact
+        if not caregivers:
+            caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+        caregiver_name = _caregiver_display_name(caregivers, caregiver_id) or "A caregiver"
+
+        schedule = await schedules_dal.get_recurring_schedule(
+            session, family_id, event.recurring_schedule_id
+        )
+        activity = schedule.activity_name if schedule else event.title
+
+        fact = f"{caregiver_name} handles {day_of_week} {activity} {_role_label(role)}"
+
+        await learning_dal.create_learning(
+            session,
+            family_id,
+            category="transport_routine",
+            fact=fact,
+            source=f"caregiver:{caregiver_id}|role:{role}",
+            confidence=0.8,
+            entity_type="recurring_schedule",
+            entity_id=event.recurring_schedule_id,
+        )
+        logger.info(
+            "Transport routine detected: %s (family %s)", fact, family_id
+        )
+
+
+async def apply_confirmed_transport_routines(
+    session: AsyncSession, family_id: UUID
+) -> None:
+    """Write confirmed transport routines to RecurringSchedule defaults.
+
+    Called after weekly summary confirms learnings.
+    """
+    routines = await learning_dal.get_learnings_by_category(
+        session, family_id, "transport_routine"
+    )
+
+    for routine in routines:
+        if not routine.confirmed or not routine.entity_id:
+            continue
+        if not routine.source:
+            continue
+
+        # Parse caregiver_id and role from source
+        parts = dict(p.split(":", 1) for p in routine.source.split("|") if ":" in p)
+        caregiver_id_str = parts.get("caregiver")
+        role = parts.get("role")
+
+        if not caregiver_id_str or not role:
+            continue
+
+        try:
+            from uuid import UUID as UUIDType
+            caregiver_id = UUIDType(caregiver_id_str)
+        except ValueError:
+            continue
+
+        update_kwargs = {}
+        if role == "drop_off":
+            update_kwargs["default_drop_off_caregiver"] = caregiver_id
+        elif role == "pick_up":
+            update_kwargs["default_pick_up_caregiver"] = caregiver_id
+        else:
+            continue
+
+        try:
+            await schedules_dal.update_schedule_defaults(
+                session, family_id, routine.entity_id, **update_kwargs
+            )
+            logger.info(
+                "Applied transport routine to schedule %s: %s",
+                routine.entity_id,
+                routine.fact,
+            )
+        except ValueError:
+            logger.warning(
+                "Could not apply routine — schedule %s not found", routine.entity_id
+            )
 
 
 # ── Private helpers ─────────────────────────────────────────────────────
