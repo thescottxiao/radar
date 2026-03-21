@@ -32,7 +32,7 @@ Intent categories:
 - assign_transport: Assigning drop-off or pick-up (e.g. "I'll take Emma to soccer", "I'll drop her off")
 - release_transport: Releasing/swapping a transport assignment (e.g. "I can't do pickup Thursday", "someone else needs to handle drop-off Tuesday", "I can't take Jake")
 - rsvp_response: Responding to an RSVP prompt (e.g. "Yes to the birthday party")
-- add_child_info: Providing child info (e.g. "Jake's shoe size is 3")
+- share_info: Sharing family information — child names/ages, schools, activities, friend names, or other family facts (e.g. "My son is John, he's 8", "Emma goes to Lincoln Elementary", "Jake does swimming on Tuesdays")
 - approval_response: Responding to a pending action awaiting approval — includes approving, dismissing, providing details, correcting info, or updating prep tasks. extracted_params must include "action": "approve", "dismiss", or "edit_instruction"
 - event_update: Updating an event already on the calendar — marking tasks done, adding notes (e.g. "I bought the wedding gift")
 - set_preference: Caregiver is stating a preference or rule for how Radar should behave (e.g. "Don't message me before 7am", "Keep messages short", "I handle school stuff", "No activities on Sundays", "Budget for gifts is $30")
@@ -47,7 +47,7 @@ Rules:
 3. event_update is only for events already on the calendar, not pending ones.
 4. If the context states "There are no pending actions awaiting approval", NEVER classify as approval_response.
 5. set_preference is for general behavior preferences, NOT for event-specific changes. "Move soccer to 3pm" is modify_event, not set_preference.
-6. correct_learning requires the word "actually" or a clear correction pattern ("not X, it's Y"). Simple new information is add_child_info.
+6. correct_learning requires the word "actually" or a clear correction pattern ("not X, it's Y"). Simple new information is share_info, not correct_learning.
 
 Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0, "extracted_params": {...}}
 """
@@ -295,7 +295,7 @@ async def route_intent(
         IntentType.assign_transport: _handle_assign_transport,
         IntentType.release_transport: _handle_release_transport,
         IntentType.rsvp_response: _handle_rsvp_response,
-        IntentType.add_child_info: _handle_add_child_info,
+        IntentType.share_info: _handle_share_info,
         IntentType.approval_response: _handle_approval_response,
         IntentType.event_update: _handle_event_update,
         IntentType.set_preference: _handle_set_preference,
@@ -1219,22 +1219,114 @@ async def _handle_rsvp_response(
     )
 
 
-async def _handle_add_child_info(
+async def _handle_share_info(
     session: AsyncSession,
     family_id: UUID,
     intent: IntentResult,
     message: str,
     sender_id: UUID,
 ) -> str:
-    """Handle add_child_info intent."""
-    await learning_dal.create_learning(
-        session,
-        family_id=family_id,
-        category="child_info",
-        fact=message,
-        source="whatsapp",
-    )
-    return "Noted! I'll remember that."
+    """Handle share_info intent — store family facts structurally."""
+
+    from pydantic import BaseModel, Field
+
+    class ExtractedFamilyInfo(BaseModel):
+        info_type: str = Field(
+            description="One of: new_child, child_school, child_activity, child_friend, other",
+        )
+        child_name: str | None = Field(
+            default=None,
+            description="Name of the child this is about, if any",
+        )
+        value: str | None = Field(
+            default=None,
+            description="The extracted value — school name, activity name, friend name, age, etc.",
+        )
+        fact: str = Field(
+            description="The full fact as a clear statement (e.g., 'Emma goes to Lincoln Elementary')",
+        )
+
+    try:
+        extracted = await extract(
+            prompt=f"User message: {message}",
+            system=(
+                "Extract the family information being shared by this caregiver.\n\n"
+                "info_type should be:\n"
+                "- new_child: introducing a child by name (e.g., 'My son is John')\n"
+                "- child_school: stating which school a child attends\n"
+                "- child_activity: stating an activity/sport a child does\n"
+                "- child_friend: naming a friend of a child\n"
+                "- other: any other family fact\n\n"
+                "Always set child_name if the info is about a specific child.\n"
+                "Set value to just the extracted value (e.g., 'Lincoln Elementary', 'swimming', 'Lily')."
+            ),
+            schema=ExtractedFamilyInfo,
+        )
+
+        child = None
+        if extracted.child_name:
+            child = await children_dal.fuzzy_match_child(
+                session, family_id, extracted.child_name
+            )
+
+        response_parts = []
+
+        if extracted.info_type == "new_child":
+            if child:
+                response_parts.append(f"I already know about {child.name}!")
+            else:
+                child = await children_dal.create_child(
+                    session, family_id, extracted.child_name
+                )
+                response_parts.append(f"Added {child.name} to your family!")
+
+        elif extracted.info_type == "child_school" and extracted.value:
+            if child:
+                child.school = extracted.value
+                await session.flush()
+                response_parts.append(f"Got it — {child.name} goes to {extracted.value}.")
+            else:
+                response_parts.append(f"Noted — {extracted.fact}.")
+
+        elif extracted.info_type == "child_activity" and extracted.value:
+            if child:
+                activities = child.activities or []
+                if extracted.value not in activities:
+                    child.activities = [*activities, extracted.value]
+                    await session.flush()
+                response_parts.append(f"Got it — {child.name} does {extracted.value}.")
+            else:
+                response_parts.append(f"Noted — {extracted.fact}.")
+
+        else:
+            response_parts.append(f"Got it — {extracted.fact}.")
+
+        # Store as confirmed learning for audit trail
+        category_map = {
+            "new_child": "contact",
+            "child_school": "child_school",
+            "child_activity": "child_activity",
+            "child_friend": "child_friend",
+            "other": "contact",
+        }
+        await learning_dal.create_learning(
+            session,
+            family_id=family_id,
+            category=category_map.get(extracted.info_type, "contact"),
+            fact=extracted.fact,
+            source="Stated by caregiver in conversation",
+            confidence=1.0,
+            entity_type="child" if child else None,
+            entity_id=child.id if child else None,
+            caregiver_id=sender_id,
+            confirmed=True,
+        )
+
+        return " ".join(response_parts)
+
+    except Exception:
+        logger.exception("share_info handler failed")
+        return "Noted! I'll remember that."
 
 
 async def _handle_approval_response(
