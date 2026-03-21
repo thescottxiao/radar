@@ -348,3 +348,36 @@ class TestRouteIntent:
 
         mock_resolve.assert_called_once()
         assert "dismiss" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_general_question_includes_family_context(self):
+        session = AsyncMock()
+        family_id = uuid4()
+        sender_id = uuid4()
+
+        intent = IntentResult(intent=IntentType.general_question, confidence=0.9)
+
+        fake_context = {
+            "family_context": "Children: Emma (age 8), Jake (age 5)\nCaregivers: Mom, Dad",
+        }
+        with patch(
+            "src.agents.context.build_family_context",
+            new_callable=AsyncMock,
+            return_value=fake_context,
+        ) as mock_ctx, patch(
+            "src.extraction.router.generate",
+            new_callable=AsyncMock,
+            return_value="Your family has Emma (8) and Jake (5). Caregivers are Mom and Dad.",
+        ) as mock_gen:
+            response = await route_intent(
+                session, family_id, intent,
+                "What do you know about our family?", sender_id,
+            )
+
+        mock_ctx.assert_called_once_with(session, family_id, caregiver_id=sender_id)
+        # Verify the system prompt includes family context
+        call_args = mock_gen.call_args
+        system_prompt = call_args[1].get("system") or call_args[0][1]
+        assert "Emma" in system_prompt
+        assert "Caregivers" in system_prompt
+        assert "Emma" in response
