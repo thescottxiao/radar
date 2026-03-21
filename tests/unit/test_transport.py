@@ -528,3 +528,360 @@ class TestPopulateTransportDefaults:
         call_kwargs = mock_update.call_args.kwargs
         assert call_kwargs["drop_off_by"] == cg1.id
         assert call_kwargs["pick_up_by"] == cg2.id
+
+
+# ── Child linkage + transport helper tests ────────────────────────────
+
+
+class TestResolveAndLinkChildren:
+    @pytest.mark.asyncio
+    async def test_links_children_by_name(self):
+        """Resolves child names and links them to the event."""
+        from src.extraction.router import _resolve_and_link_children
+
+        family_id = uuid4()
+        child = _make_child(family_id, "Emma")
+        child.activities = []
+        event = _make_event(family_id, children=[])
+
+        session = AsyncMock()
+        session.refresh = AsyncMock()
+
+        with (
+            patch("src.extraction.router.children_dal.get_children_for_family",
+                  new_callable=AsyncMock, return_value=[child]),
+            patch("src.extraction.router.events_dal.link_children_to_event",
+                  new_callable=AsyncMock) as mock_link,
+        ):
+            result = await _resolve_and_link_children(
+                session, family_id, event, ["Emma"]
+            )
+
+        assert len(result) == 1
+        assert result[0] == child.id
+        mock_link.assert_called_once()
+        session.refresh.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_names_returns_empty(self):
+        """Empty child_names list returns empty without DB calls."""
+        from src.extraction.router import _resolve_and_link_children
+
+        session = AsyncMock()
+        family_id = uuid4()
+        event = _make_event(family_id)
+
+        result = await _resolve_and_link_children(session, family_id, event, [])
+        assert result == []
+
+
+class TestInferChildFromActivity:
+    @pytest.mark.asyncio
+    async def test_infers_from_activities_array(self):
+        """If only one child has matching activity, infer that child."""
+        from src.extraction.router import _infer_child_from_activity
+
+        family_id = uuid4()
+        emma = _make_child(family_id, "Emma")
+        emma.activities = ["soccer", "swimming"]
+        jake = _make_child(family_id, "Jake")
+        jake.activities = ["piano", "chess"]
+
+        session = AsyncMock()
+
+        with (
+            patch("src.extraction.router.children_dal.get_children_for_family",
+                  new_callable=AsyncMock, return_value=[emma, jake]),
+            patch("src.extraction.router.learning_dal.get_learnings_by_category",
+                  new_callable=AsyncMock, return_value=[]),
+        ):
+            result = await _infer_child_from_activity(
+                session, family_id, "Soccer Practice", None
+            )
+
+        assert result == emma.id
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_ambiguous(self):
+        """If multiple children match, return None (ask the user)."""
+        from src.extraction.router import _infer_child_from_activity
+
+        family_id = uuid4()
+        emma = _make_child(family_id, "Emma")
+        emma.activities = ["soccer"]
+        jake = _make_child(family_id, "Jake")
+        jake.activities = ["soccer"]
+
+        session = AsyncMock()
+
+        with (
+            patch("src.extraction.router.children_dal.get_children_for_family",
+                  new_callable=AsyncMock, return_value=[emma, jake]),
+            patch("src.extraction.router.learning_dal.get_learnings_by_category",
+                  new_callable=AsyncMock, return_value=[]),
+        ):
+            result = await _infer_child_from_activity(
+                session, family_id, "Soccer Game", None
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_infers_from_family_learning(self):
+        """Infers child from FamilyLearning entries if activities array empty."""
+        from src.extraction.router import _infer_child_from_activity
+
+        family_id = uuid4()
+        emma = _make_child(family_id, "Emma")
+        emma.activities = []
+        jake = _make_child(family_id, "Jake")
+        jake.activities = []
+
+        learning = MagicMock(spec=FamilyLearning)
+        learning.fact = "Emma does soccer"
+        learning.entity_id = emma.id
+
+        session = AsyncMock()
+
+        with (
+            patch("src.extraction.router.children_dal.get_children_for_family",
+                  new_callable=AsyncMock, return_value=[emma, jake]),
+            patch("src.extraction.router.learning_dal.get_learnings_by_category",
+                  new_callable=AsyncMock, return_value=[learning]),
+        ):
+            result = await _infer_child_from_activity(
+                session, family_id, "soccer", None
+            )
+
+        assert result == emma.id
+
+
+class TestLinkChildrenAndSetupTransport:
+    @pytest.mark.asyncio
+    async def test_returns_transport_lines_for_unassigned(self):
+        """Multi-caregiver family with child event shows 'needs assignment' line."""
+        from src.extraction.router import _link_children_and_setup_transport
+
+        family_id = uuid4()
+        child = _make_child(family_id, "Emma")
+        child.activities = []
+        event = _make_event(family_id, children=[])
+
+        session = AsyncMock()
+        session.refresh = AsyncMock()
+
+        # Mock populate_transport_defaults to return "none" action (multi-caregiver, no defaults)
+        mock_transport_result = {"action": "none", "conflicts": []}
+
+        with (
+            patch("src.extraction.router.children_dal.get_children_for_family",
+                  new_callable=AsyncMock, return_value=[child]),
+            patch("src.extraction.router.events_dal.link_children_to_event",
+                  new_callable=AsyncMock),
+            patch("src.extraction.router.learning_dal.get_learnings_by_category",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("src.agents.calendar.populate_transport_defaults",
+                  new_callable=AsyncMock, return_value=mock_transport_result),
+        ):
+            result, lines = await _link_children_and_setup_transport(
+                session, family_id, event, ["Emma"],
+                event_title="Soccer", event_type="sports",
+            )
+
+        assert any("still need to be assigned" in line for line in lines)
+
+    @pytest.mark.asyncio
+    async def test_silent_for_parent_events(self):
+        """No transport lines for events without children."""
+        from src.extraction.router import _link_children_and_setup_transport
+
+        family_id = uuid4()
+        event = _make_event(family_id, children=[])
+        session = AsyncMock()
+
+        # Mock populate_transport_defaults to return "skipped" (no children)
+        mock_transport_result = {"action": "skipped", "conflicts": []}
+
+        with (
+            patch("src.extraction.router.children_dal.get_children_for_family",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("src.extraction.router.learning_dal.get_learnings_by_category",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("src.agents.calendar.populate_transport_defaults",
+                  new_callable=AsyncMock, return_value=mock_transport_result),
+        ):
+            result, lines = await _link_children_and_setup_transport(
+                session, family_id, event, [],
+                event_title="Date Night", event_type="personal",
+            )
+
+        assert lines == []
+
+
+# ── Assignment claim broadcast tests ──────────────────────────────────
+
+
+class TestHandleAssignmentClaimBroadcast:
+    @pytest.mark.asyncio
+    async def test_returns_notification_for_others(self):
+        """handle_assignment_claim returns notifications list for broadcasting."""
+        from src.agents.calendar import handle_assignment_claim
+
+        family_id = uuid4()
+        child = _make_child(family_id, "Emma")
+        cg1 = _make_caregiver(family_id, "Mom")
+        cg2 = _make_caregiver(family_id, "Dad")
+        ec = _make_event_child(uuid4(), child.id, family_id)
+        event = _make_event(family_id, children=[ec])
+
+        mock_extracted = MagicMock()
+        mock_extracted.child_name = "Emma"
+        mock_extracted.event_hint = None
+        mock_extracted.role = "drop_off"
+
+        session = AsyncMock()
+
+        with (
+            patch("src.agents.calendar._build_family_context", new_callable=AsyncMock,
+                  return_value={
+                      "upcoming": [event],
+                      "children_names": ["Emma"],
+                      "caregivers": [cg1, cg2],
+                  }),
+            patch("src.agents.calendar.extract", new_callable=AsyncMock,
+                  return_value=mock_extracted),
+            patch("src.agents.calendar.children_dal.fuzzy_match_child",
+                  new_callable=AsyncMock, return_value=child),
+            patch("src.agents.calendar.events_dal.update_event",
+                  new_callable=AsyncMock),
+            patch("src.agents.calendar.check_all_transport_conflicts",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("src.agents.calendar.track_transport_claim",
+                  new_callable=AsyncMock),
+        ):
+            response, notifications = await handle_assignment_claim(
+                session, family_id, "I'll drop Emma off at soccer", cg1.id
+            )
+
+        assert "✓" in response
+        assert len(notifications) == 1
+        assert "Mom" in notifications[0]
+        assert "drop-off" in notifications[0]
+
+    @pytest.mark.asyncio
+    async def test_includes_conflict_in_notification(self):
+        """Sibling conflicts are included in notifications for all caregivers."""
+        from src.agents.calendar import handle_assignment_claim
+
+        family_id = uuid4()
+        child = _make_child(family_id, "Emma")
+        cg1 = _make_caregiver(family_id, "Mom")
+        cg2 = _make_caregiver(family_id, "Dad")
+        ec = _make_event_child(uuid4(), child.id, family_id)
+        event = _make_event(family_id, children=[ec])
+
+        mock_extracted = MagicMock()
+        mock_extracted.child_name = "Emma"
+        mock_extracted.event_hint = None
+        mock_extracted.role = "drop_off"
+
+        conflict = Conflict(
+            existing_event_id=uuid4(),
+            existing_event_title="Piano",
+            existing_event_start=datetime.now(UTC) + timedelta(hours=24),
+            conflict_type="sibling_transport_conflict",
+            description="Mom drops off Emma at Soccer and Jake at Piano at same time.",
+        )
+
+        session = AsyncMock()
+
+        with (
+            patch("src.agents.calendar._build_family_context", new_callable=AsyncMock,
+                  return_value={
+                      "upcoming": [event],
+                      "children_names": ["Emma"],
+                      "caregivers": [cg1, cg2],
+                  }),
+            patch("src.agents.calendar.extract", new_callable=AsyncMock,
+                  return_value=mock_extracted),
+            patch("src.agents.calendar.children_dal.fuzzy_match_child",
+                  new_callable=AsyncMock, return_value=child),
+            patch("src.agents.calendar.events_dal.update_event",
+                  new_callable=AsyncMock),
+            patch("src.agents.calendar.check_all_transport_conflicts",
+                  new_callable=AsyncMock, return_value=[conflict]),
+            patch("src.agents.calendar.track_transport_claim",
+                  new_callable=AsyncMock),
+        ):
+            response, notifications = await handle_assignment_claim(
+                session, family_id, "I'll drop Emma off at soccer", cg1.id
+            )
+
+        assert "⚠️ Heads up:" in response
+        assert "⚠️ Heads up:" in notifications[0]
+
+
+# ── GCal transport description tests ──────────────────────────────────
+
+
+class TestGCalTransportDescription:
+    def test_appends_transport_section(self):
+        """Transport section is appended to GCal description."""
+        from src.actions.gcal import _event_to_gcal_body
+
+        family_id = uuid4()
+        mom_id = uuid4()
+        dad_id = uuid4()
+        event = _make_event(family_id, drop_off_by=mom_id, pick_up_by=dad_id)
+        event.description = "Bring water bottle"
+
+        caregiver_map = {mom_id: "Mom", dad_id: "Dad"}
+        body = _event_to_gcal_body(event, caregiver_map=caregiver_map)
+
+        assert "🚗 Transport" in body["description"]
+        assert "Drop-off: Mom" in body["description"]
+        assert "Pick-up: Dad" in body["description"]
+        assert "Bring water bottle" in body["description"]
+
+    def test_no_transport_without_assignments(self):
+        """No transport section when no assignments exist."""
+        from src.actions.gcal import _event_to_gcal_body
+
+        family_id = uuid4()
+        event = _make_event(family_id, drop_off_by=None, pick_up_by=None)
+        event.description = "Just a regular event"
+
+        body = _event_to_gcal_body(event, caregiver_map={})
+
+        assert "🚗 Transport" not in body.get("description", "")
+
+    def test_no_transport_without_caregiver_map(self):
+        """No transport section when caregiver_map is None."""
+        from src.actions.gcal import _event_to_gcal_body
+
+        family_id = uuid4()
+        mom_id = uuid4()
+        event = _make_event(family_id, drop_off_by=mom_id, pick_up_by=None)
+        event.description = "Event"
+
+        body = _event_to_gcal_body(event, caregiver_map=None)
+
+        assert "🚗 Transport" not in body.get("description", "")
+
+    def test_replaces_existing_transport_section(self):
+        """Existing transport section is replaced, not duplicated."""
+        from src.actions.gcal import _event_to_gcal_body
+
+        family_id = uuid4()
+        mom_id = uuid4()
+        dad_id = uuid4()
+        event = _make_event(family_id, drop_off_by=mom_id, pick_up_by=dad_id)
+        event.description = "Details here\n\n🚗 Transport\nDrop-off: Old\nPick-up: Old"
+
+        caregiver_map = {mom_id: "Mom", dad_id: "Dad"}
+        body = _event_to_gcal_body(event, caregiver_map=caregiver_map)
+
+        # Should only appear once
+        assert body["description"].count("🚗 Transport") == 1
+        assert "Drop-off: Mom" in body["description"]
+        assert "Old" not in body["description"]

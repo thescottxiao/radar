@@ -318,12 +318,12 @@ async def handle_update(
 
     # Update GCal (best-effort)
     try:
-        from src.actions.gcal import update_gcal_event
+        from src.actions.gcal import update_calendar_event
 
         caregivers = ctx["caregivers"]
         for caregiver in caregivers:
             if caregiver.google_refresh_token_encrypted:
-                await update_gcal_event(session, caregiver.id, updated)
+                await update_calendar_event(session, family_id, updated)
                 break
     except (ImportError, Exception) as exc:
         logger.warning("Could not update GCal event: %s", exc)
@@ -438,8 +438,11 @@ async def handle_assignment_claim(
     family_id: UUID,
     message: str,
     sender_id: UUID,
-) -> str:
-    """Handle a transport assignment claim like 'I'll take Jake'."""
+) -> tuple[str, list[str]]:
+    """Handle a transport assignment claim like 'I'll take Jake'.
+
+    Returns (response_for_claimer, [notifications_for_others]).
+    """
     ctx = await _build_family_context(session, family_id)
 
     # Filter upcoming events that still need transport
@@ -468,7 +471,8 @@ async def handle_assignment_claim(
     if not child:
         return (
             f"I'm not sure which child you mean by \"{extracted.child_name}\". "
-            f"Your children are: {', '.join(ctx['children_names'])}."
+            f"Your children are: {', '.join(ctx['children_names'])}.",
+            [],
         )
 
     # Filter to events linked to this child
@@ -494,7 +498,7 @@ async def handle_assignment_claim(
             target_event = events_needing_transport[0]
 
     if not target_event:
-        return "I couldn't find an upcoming event that needs transport assignment."
+        return ("I couldn't find an upcoming event that needs transport assignment.", [])
 
     # Apply assignment
     update_kwargs = {}
@@ -527,18 +531,33 @@ async def handle_assignment_claim(
         remaining.append("drop-off")
     if not target_event.pick_up_by:
         remaining.append("pick-up")
+    remaining_text = ""
     if remaining:
-        response += f" {' and '.join(remaining).capitalize()} is still unassigned."
+        remaining_text = f" {' and '.join(remaining).capitalize()} is still unassigned."
+        response += remaining_text
+
+    # Build notification for other caregivers
+    notification = (
+        f"{sender_name or 'A caregiver'} is handling {role_text} "
+        f"for {child.name} at \"{target_event.title}\" on {time_str}."
+    )
+    if remaining_text:
+        notification += remaining_text
 
     # Sibling conflict check
     all_conflicts = await check_all_transport_conflicts(
         session, family_id, target_event, caregiver_filter=sender_id
     )
 
+    conflict_text = ""
     if all_conflicts:
-        response += "\n\n⚠️ Heads up:"
+        conflict_text = "\n\n⚠️ Heads up:"
         for c in all_conflicts:
-            response += f"\n• {c.description}"
+            conflict_text += f"\n• {c.description}"
+        response += conflict_text
+        notification += conflict_text  # Conflicts go to ALL caregivers
+
+    notifications = [notification]
 
     # Track claim for routine inference
     try:
@@ -551,18 +570,15 @@ async def handle_assignment_claim(
     except Exception:
         logger.debug("Could not track transport claim for routine inference", exc_info=True)
 
-    # Best-effort GCal sync
+    # Best-effort GCal sync (includes transport section in description)
     try:
-        from src.actions.gcal import update_gcal_event
+        from src.actions.gcal import update_calendar_event
 
-        for caregiver in ctx["caregivers"]:
-            if caregiver.google_refresh_token_encrypted:
-                await update_gcal_event(session, caregiver.id, target_event)
-                break
+        await update_calendar_event(session, family_id, target_event)
     except (ImportError, Exception) as exc:
         logger.debug("Could not sync transport assignment to GCal: %s", exc)
 
-    return response
+    return response, notifications
 
 
 async def detect_conflicts(

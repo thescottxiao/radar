@@ -95,7 +95,7 @@ async def persist_extraction(
         )
 
         # Link children to event
-        child_ids = _resolve_child_names(extracted_event.child_names, child_name_map)
+        child_ids = resolve_child_names(extracted_event.child_names, child_name_map)
         if child_ids and is_new:
             await event_dal.link_children_to_event(session, family_id, event.id, child_ids)
 
@@ -163,7 +163,7 @@ async def persist_extraction(
     return persisted_events
 
 
-def _resolve_child_names(
+def resolve_child_names(
     names: list[str], child_name_map: dict[str, UUID]
 ) -> list[UUID]:
     """Resolve extracted child names to UUIDs using fuzzy matching."""
