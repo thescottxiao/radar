@@ -70,13 +70,15 @@ async def build_family_context(
     today = datetime.now(UTC).strftime("%Y-%m-%d")
 
     # Confirmed learnings (non-preference facts that haven't graduated)
+    # Use savepoints so a failed query doesn't poison the whole transaction
     learnings = []
     preferences = []
     try:
-        learnings = await learning_dal.get_confirmed_learnings(session, family_id)
-        preferences = await learning_dal.get_active_preferences(
-            session, family_id, caregiver_id
-        )
+        async with session.begin_nested():
+            learnings = await learning_dal.get_confirmed_learnings(session, family_id)
+            preferences = await learning_dal.get_active_preferences(
+                session, family_id, caregiver_id
+            )
     except Exception:
         logger.debug("Could not load learnings/preferences for family %s", family_id)
     learnings_text = _format_learnings(learnings)
@@ -86,9 +88,10 @@ async def build_family_context(
     structured_prefs = None
     if caregiver_id:
         try:
-            structured_prefs = await pref_dal.get_or_create_preferences(
-                session, caregiver_id, family_id
-            )
+            async with session.begin_nested():
+                structured_prefs = await pref_dal.get_or_create_preferences(
+                    session, caregiver_id, family_id
+                )
         except Exception:
             logger.debug("Could not load structured preferences for caregiver %s", caregiver_id)
 
