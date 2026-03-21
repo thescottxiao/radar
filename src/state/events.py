@@ -3,6 +3,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.state.models import (
     ActionItem,
@@ -23,6 +24,7 @@ async def create_event(session: AsyncSession, family_id: UUID, **kwargs) -> Even
 async def get_event(session: AsyncSession, family_id: UUID, event_id: UUID) -> Event | None:
     result = await session.execute(
         select(Event).where(Event.family_id == family_id, Event.id == event_id)
+        .options(selectinload(Event.children))
     )
     return result.scalar_one_or_none()
 
@@ -40,6 +42,7 @@ async def get_events_in_range(
             Event.datetime_start >= start,
             Event.datetime_start < end,
         )
+        .options(selectinload(Event.children))
         .order_by(Event.datetime_start)
     )
     return list(result.scalars().all())
@@ -61,7 +64,8 @@ async def get_events_needing_rsvp(
             Event.family_id == family_id,
             Event.rsvp_status == RsvpStatus.pending,
             Event.rsvp_deadline.is_not(None),
-        ).order_by(Event.rsvp_deadline)
+        ).options(selectinload(Event.children))
+        .order_by(Event.rsvp_deadline)
     )
     return list(result.scalars().all())
 
@@ -86,7 +90,7 @@ async def find_duplicate_event(
             Event.family_id == family_id,
             Event.datetime_start >= window_start,
             Event.datetime_start <= window_end,
-        )
+        ).options(selectinload(Event.children))
     )
     candidates = result.scalars().all()
 
@@ -157,7 +161,7 @@ async def get_events_by_source_ref(
         select(Event).where(
             Event.family_id == family_id,
             Event.source_refs.any(source_ref),
-        )
+        ).options(selectinload(Event.children))
     )
     return list(result.scalars().all())
 
