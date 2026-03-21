@@ -754,46 +754,145 @@ Bot: Emma's piano lesson series ends this week. Want to
 
 ---
 
-## 11. Family Profile Learning
+## 11. Family Knowledge & Preferences
 
 ### Principle
 
-The bot continuously learns about the family from processed emails, calendar events, and conversations. Learnings are stored silently and surfaced for correction in the weekly Sunday summary.
+Radar continuously builds a picture of the family from emails, calendar events, and conversations. This knowledge falls into two categories:
+
+1. **Facts** — what Radar knows about the family (schools, friends, contacts, schedules)
+2. **Preferences** — how the family wants Radar to behave (communication style, scheduling rules, delegation, decision defaults)
+
+Knowledge is stored, surfaced for correction, and — critically — **fed back into agent prompts** so it actually improves Radar's behavior over time.
+
+### Three-Tier Storage Model
+
+Data lives in one of three tiers based on whether the system needs to act on it programmatically:
+
+#### Tier 1: Structured Core (typed columns, deterministic behavior)
+
+Data that gates system behavior or has a natural home in an existing table. Code queries and acts on these directly — no LLM interpretation needed.
+
+| Table | What it stores |
+|-------|---------------|
+| `children` | Name, DOB, school, grade, activities |
+| `child_friends` | Friend name, parent name, contact |
+| `families` | Timezone, digest time, summary day/time |
+| `caregivers` | Name, phone, email |
+| `caregiver_preferences` | Quiet hours, delegation areas |
+
+When a learning is confirmed and has a structured target (e.g., "Emma goes to Lincoln Elementary" → `children.school`), it **graduates** from the staging area into the structured table.
+
+#### Tier 2: Freeform Preferences (strings injected into LLM prompts)
+
+Preferences too nuanced or varied to structure. Stored as `family_learnings` rows with `pref_*` categories. The LLM reads them as prompt context and adjusts behavior naturally.
+
+Examples:
+- "Keep messages short" (`pref_communication`)
+- "We never schedule activities on Sunday mornings" (`pref_scheduling`)
+- "Remind me about gifts 3 days before events" (`pref_prep`)
+- "Dad prefers to handle sports logistics" (`pref_delegation`)
+- "Default birthday gift budget is around $30" (`pref_decision`)
+- "Always RSVP yes for Emma's close friends" (`pref_decision`)
+
+#### Tier 3: Staging Area (observations awaiting graduation)
+
+`family_learnings` also serves as a staging area for factual observations extracted from emails. These land here first, then graduate to structured tables when confirmed:
+
+- "Emma goes to Lincoln Elementary" → on confirm, update `children.school`
+- "Jake's friend Max, mom is Lisa Chen" → on confirm, create `ChildFriend` row
+- "Emma does swim" → on confirm, append to `children.activities`
+
+After graduation, the learning row is marked `graduated = true` — history is preserved but it's not surfaced again.
 
 ### What the Bot Learns
 
+**Facts** (graduate to structured tables when confirmed):
 - Child's school (from school email domains, newsletter headers)
 - Child's activities and teams (from registration emails, season schedules)
 - Child's friends (from playdate requests, party invites)
 - Other parents' contact info (from email metadata)
 - Coaches and teachers (from email senders)
-- Gear inventory (from purchase confirmations, "need new cleats" conversations)
 - Schedule patterns (Mom usually does Tuesday pickup, Dad does Thursday)
 - Budget norms (typical gift spending range, camp budget)
 
+**Preferences** (stay as freeform strings or structured fields):
+
+| Category | Scope | Examples |
+|----------|-------|---------|
+| `pref_communication` | Per-caregiver | "Keep messages short", "I like detail", "Use bullet points" |
+| `pref_scheduling` | Per-family | "No activities on Sundays", "Prefer morning activities", "Max 2 weeknight events" |
+| `pref_notification` | Per-caregiver | Quiet hours (structured), "Don't ping me for RSVP reminders" |
+| `pref_prep` | Per-family | "Remind about gifts 3 days before", "I always pack gear the night before" |
+| `pref_delegation` | Per-caregiver | Delegation areas (structured), "Mom handles school, Dad handles sports" |
+| `pref_decision` | Per-family | "Default gift budget $30", "Always RSVP yes for close friends" |
+
+### Detection Sources
+
+| Source | Mechanism | Confirmation required? |
+|--------|-----------|----------------------|
+| Explicit chat statement | "Don't message me before 7am" | No — direct instruction, stored as `confirmed = true` |
+| Email extraction | Budget norms from camp registration email | Yes — surfaced in weekly summary |
+| Light behavioral inference | "I noticed you usually decline weeknight events" | Yes — posed as a question, only stored if caregiver confirms |
+| Onboarding | "What time do you want your daily digest?" | No — direct answer |
+
+**Light inference rules:** The bot may observe repeated patterns (3+ occurrences over 2 weeks) and surface them as suggestions in the weekly summary. Inferred preferences are never stored without explicit confirmation. Examples:
+- "I noticed Mom usually handles Tuesday pickups — should I remember this?"
+- "You've declined the last 3 weeknight events — want me to flag those automatically?"
+
 ### Learning Lifecycle
 
-1. **Detection:** Agent extracts a new fact from email, calendar, or conversation.
-2. **Storage:** Created as a `FamilyLearning` entry with `confirmed = false`.
-3. **Surface:** In the next weekly Sunday summary, unconfirmed learnings are presented:
-   ```
-   Bot: Here's what I learned this week:
-        - Emma goes to Lincoln Elementary (from school newsletter)
-        - Jake's friend Max — his mom is Lisa Chen, lisa.chen@gmail.com
-        - Sophia's birthday is March 28 (from party invite)
+```
+Detection (email, conversation, inference)
+       ↓
+family_learnings (confirmed = false, surfaced_in_summary = false)
+       ↓ surfaced in weekly Sunday summary
+family_learnings (surfaced_in_summary = true)
+       ↓ no correction received by next summary cycle
+family_learnings (confirmed = true)
+       ↓ if structured target exists (GRADUATION_MAP)
+Structured table updated (children.school, child_friends, etc.)
+family_learnings (graduated = true)
+```
 
-        Anything wrong? Just let me know.
-   ```
-4. **Confirmation:** If no correction is received, `confirmed = true` after the following weekly summary cycle. If corrected, the entry is updated.
+**Exception — explicit statements:** When a caregiver directly states a preference or fact in conversation, it's stored immediately as `confirmed = true` with no summary cycle needed.
+
+### Per-Caregiver vs. Per-Family
+
+- `family_learnings.caregiver_id = NULL` → family-wide (applies to everyone)
+- `family_learnings.caregiver_id = <UUID>` → per-caregiver (overrides family-wide for that person)
+
+Structured preferences (`caregiver_preferences` table) are always per-caregiver.
 
 ### Correction Handling
 
-Caregivers can correct at any time, not just during the summary:
+Caregivers can correct at any time, not just during summaries. The router classifies corrections as `correct_learning` intent.
+
+**Correcting a structured fact:**
 ```
 Caregiver: Actually Emma goes to Washington Elementary, not Lincoln
 
 Bot: Updated ✓ — Emma's school changed to Washington Elementary.
 ```
+→ Updates `children.school` directly (or the learning if not yet graduated).
+
+**Correcting a freeform preference:**
+```
+Caregiver: Actually, remind me about gifts a week before, not 3 days
+
+Bot: Got it — updated to remind about gifts a week before events.
+```
+→ Old learning is superseded (not deleted — history preserved), new one created as confirmed.
+
+### How Preferences Flow Into Agent Behavior
+
+Every agent that builds an LLM prompt queries confirmed learnings and active preferences for the family (and caregiver, where applicable) via the shared context builder. The context includes:
+
+- Confirmed facts not yet graduated (e.g., "Coach Johnson runs the swim team")
+- Active freeform preferences (e.g., "Keep messages short", "No Sunday activities")
+- Structured preferences are used directly in code (quiet hours gate message sending, delegation areas route notifications)
+
+Preferences don't require hard-coded logic for each variation — they're injected into prompts and the LLM applies them naturally. The structured preferences (quiet hours, delegation) are the exception: these gate system behavior before any LLM is called.
 
 ---
 

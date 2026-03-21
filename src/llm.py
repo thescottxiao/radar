@@ -93,6 +93,8 @@ def _normalize_extraction(data: dict) -> dict:
     _VALID_LEARNING_CATEGORIES = {
         "child_school", "child_activity", "child_friend", "contact",
         "gear", "preference", "schedule_pattern", "budget",
+        "pref_communication", "pref_scheduling", "pref_notification",
+        "pref_prep", "pref_delegation", "pref_decision",
     }
     # Map common LLM category outputs to valid DB categories
     _CATEGORY_MAP = {
@@ -102,6 +104,12 @@ def _normalize_extraction(data: dict) -> dict:
         "allergy": "preference",
         "routine": "schedule_pattern",
         "schedule": "schedule_pattern",
+        "communication": "pref_communication",
+        "scheduling": "pref_scheduling",
+        "notification": "pref_notification",
+        "prep": "pref_prep",
+        "delegation": "pref_delegation",
+        "decision": "pref_decision",
         "other": "contact",
     }
     for learning in data.get("learnings", []):

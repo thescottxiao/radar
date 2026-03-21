@@ -21,6 +21,8 @@ class IntentType(enum.StrEnum):
     add_child_info = "add_child_info"
     approval_response = "approval_response"  # approve/dismiss/edit pending action
     event_update = "event_update"  # update info about an existing event (mark task done, add notes)
+    set_preference = "set_preference"  # caregiver states a preference ("don't message before 7am")
+    correct_learning = "correct_learning"  # correcting a fact/preference ("actually Emma goes to Washington Elementary")
     general_question = "general_question"
     greeting = "greeting"
     unknown = "unknown"

@@ -19,10 +19,10 @@ from src.agents.schemas import (
     ExtractedUpdate,
     ResolvedEvent,
 )
+from src.agents.context import build_family_context
 from src.llm import extract, generate
 from src.state import children as children_dal
 from src.state import events as events_dal
-from src.state import families as families_dal
 from src.state import memory as memory_dal
 from src.state.models import Event, EventSource
 
@@ -80,51 +80,11 @@ Upcoming events needing transport:
 
 
 async def _build_family_context(session: AsyncSession, family_id: UUID) -> dict:
-    """Build context strings for LLM prompts."""
-    family = await families_dal.get_family(session, family_id)
-    if not family:
-        raise ValueError(f"Family {family_id} not found")
+    """Build context strings for LLM prompts.
 
-    kids = await children_dal.get_children_for_family(session, family_id)
-    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
-    upcoming = await events_dal.get_upcoming_events(session, family_id, days=14)
-
-    children_info = []
-    for child in kids:
-        info = child.name
-        if child.activities:
-            info += f" (activities: {', '.join(child.activities)})"
-        children_info.append(info)
-
-    caregiver_info = [c.name or c.whatsapp_phone for c in caregivers]
-
-    event_lines = []
-    for ev in upcoming:
-        start_str = ev.datetime_start.strftime("%a %b %d at %I:%M %p")
-        line = f"- {ev.title}: {start_str}"
-        if ev.location:
-            line += f" at {ev.location}"
-        event_lines.append(line)
-
-    today = datetime.now(UTC).strftime("%Y-%m-%d")
-
-    family_context = (
-        f"Children: {', '.join(children_info) if children_info else 'none yet'}\n"
-        f"Caregivers: {', '.join(caregiver_info)}\n"
-        f"Upcoming events:\n" + ("\n".join(event_lines) if event_lines else "  (none)")
-    )
-
-    return {
-        "family": family,
-        "children": kids,
-        "caregivers": caregivers,
-        "upcoming": upcoming,
-        "children_names": [c.name for c in kids],
-        "caregiver_names": caregiver_info,
-        "family_context": family_context,
-        "today": today,
-        "timezone": family.timezone,
-    }
+    Delegates to the shared context builder which includes learnings and preferences.
+    """
+    return await build_family_context(session, family_id)
 
 
 

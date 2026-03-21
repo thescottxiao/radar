@@ -277,10 +277,12 @@ class TestHandleSchedule:
         )
 
         with (
-            patch("src.agents.calendar.families_dal.get_family", new_callable=AsyncMock, return_value=mock_family),
-            patch("src.agents.calendar.children_dal.get_children_for_family", new_callable=AsyncMock, return_value=[mock_child]),
-            patch("src.agents.calendar.families_dal.get_caregivers_for_family", new_callable=AsyncMock, return_value=[mock_caregiver]),
-            patch("src.agents.calendar.events_dal.get_upcoming_events", new_callable=AsyncMock, return_value=[]),
+            patch("src.agents.context.families_dal.get_family", new_callable=AsyncMock, return_value=mock_family),
+            patch("src.agents.context.children_dal.get_children_for_family", new_callable=AsyncMock, return_value=[mock_child]),
+            patch("src.agents.context.families_dal.get_caregivers_for_family", new_callable=AsyncMock, return_value=[mock_caregiver]),
+            patch("src.agents.context.events_dal.get_upcoming_events", new_callable=AsyncMock, return_value=[]),
+            patch("src.agents.context.learning_dal.get_confirmed_learnings", new_callable=AsyncMock, return_value=[]),
+            patch("src.agents.context.learning_dal.get_active_preferences", new_callable=AsyncMock, return_value=[]),
             patch("src.agents.calendar.events_dal.get_events_in_range", new_callable=AsyncMock, return_value=[]),
             patch("src.agents.calendar.extract", new_callable=AsyncMock, return_value=extracted),
             patch("src.agents.calendar.generate", new_callable=AsyncMock, return_value=start_time.isoformat()),
@@ -332,10 +334,12 @@ class TestHandleSchedule:
         )
 
         with (
-            patch("src.agents.calendar.families_dal.get_family", new_callable=AsyncMock, return_value=mock_family),
-            patch("src.agents.calendar.children_dal.get_children_for_family", new_callable=AsyncMock, return_value=[]),
-            patch("src.agents.calendar.families_dal.get_caregivers_for_family", new_callable=AsyncMock, return_value=[mock_caregiver]),
-            patch("src.agents.calendar.events_dal.get_upcoming_events", new_callable=AsyncMock, return_value=[existing_event]),
+            patch("src.agents.context.families_dal.get_family", new_callable=AsyncMock, return_value=mock_family),
+            patch("src.agents.context.children_dal.get_children_for_family", new_callable=AsyncMock, return_value=[]),
+            patch("src.agents.context.families_dal.get_caregivers_for_family", new_callable=AsyncMock, return_value=[mock_caregiver]),
+            patch("src.agents.context.events_dal.get_upcoming_events", new_callable=AsyncMock, return_value=[existing_event]),
+            patch("src.agents.context.learning_dal.get_confirmed_learnings", new_callable=AsyncMock, return_value=[]),
+            patch("src.agents.context.learning_dal.get_active_preferences", new_callable=AsyncMock, return_value=[]),
             patch("src.agents.calendar.events_dal.get_events_in_range", new_callable=AsyncMock, return_value=[]),
             patch("src.agents.calendar.extract", new_callable=AsyncMock, return_value=extracted),
             patch("src.agents.calendar.generate", new_callable=AsyncMock, return_value=start_time.isoformat()),
