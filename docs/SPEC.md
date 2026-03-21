@@ -416,6 +416,7 @@ FamilyLearning {
 | `correction` | "Actually that's next Saturday" | Update Event/ActionItem |
 | `event_update` | "I already bought the wedding gift" | Match event from context/GCal, update description |
 | `dismiss` | "Skip", "not interested" | Dismiss pending suggestion |
+| `share_info` | "My son is John", "Emma goes to Lincoln Elementary" | Create/update child records, store as learning |
 | `general` | "Thanks", "ok" | Acknowledge, no routing |
 
 **Button reply handling:** When a WhatsApp message contains a button reply (interactive message type `button_reply`), the router decodes the structured button ID (`{action_type}:{pending_action_id}:{response}`) and routes directly to the approval handler with confidence=1.0 — no LLM classification needed. This bypasses the keyword and LLM classification pipeline entirely.

@@ -19,7 +19,7 @@ class IntentType(enum.StrEnum):
     assign_transport = "assign_transport"
     release_transport = "release_transport"
     rsvp_response = "rsvp_response"
-    add_child_info = "add_child_info"
+    share_info = "share_info"
     approval_response = "approval_response"  # approve/dismiss/edit pending action
     event_update = "event_update"  # update info about an existing event (mark task done, add notes)
     set_preference = "set_preference"  # caregiver states a preference ("don't message before 7am")

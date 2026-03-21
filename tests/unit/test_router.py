@@ -84,7 +84,7 @@ class TestParseClassificationResponse:
             ("cancel_event", IntentType.cancel_event),
             ("assign_transport", IntentType.assign_transport),
             ("rsvp_response", IntentType.rsvp_response),
-            ("add_child_info", IntentType.add_child_info),
+            ("share_info", IntentType.share_info),
             ("approval_response", IntentType.approval_response),
             ("general_question", IntentType.general_question),
             ("greeting", IntentType.greeting),
@@ -311,20 +311,73 @@ class TestRouteIntent:
         assert "sorry" in response.lower() or "wrong" in response.lower()
 
     @pytest.mark.asyncio
-    async def test_add_child_info_creates_learning(self):
+    async def test_share_info_creates_child(self):
         session = AsyncMock()
         family_id = uuid4()
         sender_id = uuid4()
 
-        intent = IntentResult(intent=IntentType.add_child_info, confidence=0.85)
+        intent = IntentResult(intent=IntentType.share_info, confidence=0.85)
 
-        with patch("src.extraction.router.learning_dal.create_learning", new_callable=AsyncMock) as mock_learn:
+        mock_child = MagicMock()
+        mock_child.id = uuid4()
+        mock_child.name = "John"
+
+        from pydantic import BaseModel, Field
+
+        class FakeInfo(BaseModel):
+            info_type: str = "new_child"
+            child_name: str | None = "John"
+            value: str | None = None
+            fact: str = "My son is John"
+
+        with (
+            patch("src.extraction.router.extract", new_callable=AsyncMock, return_value=FakeInfo()) as mock_extract,
+            patch("src.extraction.router.children_dal.fuzzy_match_child", new_callable=AsyncMock, return_value=None),
+            patch("src.extraction.router.children_dal.create_child", new_callable=AsyncMock, return_value=mock_child) as mock_create,
+            patch("src.extraction.router.learning_dal.create_learning", new_callable=AsyncMock) as mock_learn,
+        ):
             response = await route_intent(
-                session, family_id, intent, "Jake's shoe size is 3", sender_id
+                session, family_id, intent, "My son is John", sender_id
             )
 
+        mock_create.assert_called_once_with(session, family_id, "John")
         mock_learn.assert_called_once()
-        assert "noted" in response.lower() or "remember" in response.lower()
+        assert "john" in response.lower()
+        assert "added" in response.lower() or "got it" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_share_info_updates_school(self):
+        session = AsyncMock()
+        family_id = uuid4()
+        sender_id = uuid4()
+
+        intent = IntentResult(intent=IntentType.share_info, confidence=0.90)
+
+        mock_child = MagicMock()
+        mock_child.id = uuid4()
+        mock_child.name = "Emma"
+        mock_child.school = None
+
+        from pydantic import BaseModel, Field
+
+        class FakeInfo(BaseModel):
+            info_type: str = "child_school"
+            child_name: str | None = "Emma"
+            value: str | None = "Lincoln Elementary"
+            fact: str = "Emma goes to Lincoln Elementary"
+
+        with (
+            patch("src.extraction.router.extract", new_callable=AsyncMock, return_value=FakeInfo()),
+            patch("src.extraction.router.children_dal.fuzzy_match_child", new_callable=AsyncMock, return_value=mock_child),
+            patch("src.extraction.router.learning_dal.create_learning", new_callable=AsyncMock) as mock_learn,
+        ):
+            response = await route_intent(
+                session, family_id, intent, "Emma goes to Lincoln Elementary", sender_id
+            )
+
+        assert mock_child.school == "Lincoln Elementary"
+        mock_learn.assert_called_once()
+        assert "lincoln elementary" in response.lower()
 
     @pytest.mark.asyncio
     async def test_approval_approve(self):
