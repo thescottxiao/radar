@@ -146,7 +146,12 @@ class ExtractedAssignment(BaseModel):
     child_name: str = Field(description="Name of child being claimed for transport")
     event_hint: str | None = Field(
         default=None,
-        description="Which event this assignment is for, if mentioned",
+        description=(
+            "Which event this assignment is for. Extract from the user's message "
+            "OR from recent conversation context. If the recent conversation was about "
+            "a specific event (e.g., 'soccer practice'), set this to that event name "
+            "even if the current message just says 'handle it'."
+        ),
     )
     role: str = Field(
         default="both",
