@@ -80,8 +80,10 @@ Upcoming events needing transport:
 {upcoming_events}
 {recent_context}
 IMPORTANT:
-- If the recent conversation mentions a specific event, that is almost certainly
-  the event the parent means — even if they don't name it explicitly.
+- If the recent conversation discusses a specific event (e.g., user asked about "Wed morning
+  soccer" and the bot replied about "Soccer practice on Wednesday"), you MUST set event_hint
+  to that event name (e.g., "soccer practice"). Do this even if the current message just says
+  "handle it" or "Nick will do it" without naming the event.
 - If the message names a caregiver (e.g., "Nick has dropoff", "Dad is doing pickup"),
   set assigned_caregiver to that name. If the sender says "I'll handle it" or doesn't
   name anyone, leave assigned_caregiver null.
