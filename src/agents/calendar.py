@@ -497,7 +497,7 @@ async def handle_assignment_claim(
         )
 
     # Refresh children relationships that may have expired after LLM + DB calls
-    for ev in events_needing_transport:
+    for ev in ctx["upcoming"]:
         try:
             await session.refresh(ev, ["children"])
         except Exception:
@@ -518,6 +518,14 @@ async def handle_assignment_claim(
         date_filtered = _filter_events_by_date_hint(candidates, extracted.date_hint)
         if date_filtered:
             candidates = date_filtered
+        else:
+            # Date didn't match any events needing transport — the event may
+            # already have transport assigned (reassignment case). Search ALL
+            # upcoming events so we can still match and reassign.
+            all_upcoming = ctx["upcoming"]
+            all_date_filtered = _filter_events_by_date_hint(all_upcoming, extracted.date_hint)
+            if all_date_filtered:
+                candidates = all_date_filtered
 
     if extracted.event_hint:
         target_event = await _find_target_event(
