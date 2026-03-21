@@ -153,6 +153,14 @@ class ExtractedAssignment(BaseModel):
             "even if the current message just says 'handle it'."
         ),
     )
+    date_hint: str | None = Field(
+        default=None,
+        description=(
+            "Day or date reference for the event, if mentioned in the message or "
+            "recent conversation. Examples: 'Monday', 'Wednesday', 'Wed', 'March 25', "
+            "'this weekend'. Used to disambiguate when multiple events share a title."
+        ),
+    )
     role: str = Field(
         default="both",
         description="One of: drop_off, pick_up, both",

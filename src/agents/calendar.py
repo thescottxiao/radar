@@ -511,14 +511,22 @@ async def handle_assignment_claim(
 
     # Find the target event (if hinted) or the next event for that child
     target_event = None
+    candidates = child_events or events_needing_transport
+
+    # If there's a date hint, filter candidates to matching dates first
+    if extracted.date_hint and isinstance(extracted.date_hint, str):
+        date_filtered = _filter_events_by_date_hint(candidates, extracted.date_hint)
+        if date_filtered:
+            candidates = date_filtered
+
     if extracted.event_hint:
         target_event = await _find_target_event(
             session, family_id, extracted.event_hint,
-            child_events or events_needing_transport,
+            candidates,
         )
 
-    if not target_event and child_events:
-        target_event = child_events[0]
+    if not target_event and candidates:
+        target_event = candidates[0]
 
     if not target_event:
         # Fall back to any event needing transport
@@ -1350,6 +1358,47 @@ def _format_events_for_prompt(events: list[Event]) -> str:
             line += f" at {ev.location}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def _filter_events_by_date_hint(
+    events: list["Event"], date_hint: str
+) -> list["Event"]:
+    """Filter events whose date matches a natural-language date hint.
+
+    Handles day names (Mon, Monday, Wed, Wednesday), date strings (March 25),
+    and relative references (today, tomorrow, this weekend).
+    """
+    import re
+
+    hint_lower = date_hint.lower().strip()
+
+    # Map day name abbreviations to full names and weekday numbers (Mon=0)
+    _DAY_MAP = {
+        "mon": 0, "monday": 0,
+        "tue": 1, "tues": 1, "tuesday": 1,
+        "wed": 2, "wednesday": 2,
+        "thu": 3, "thur": 3, "thurs": 3, "thursday": 3,
+        "fri": 4, "friday": 4,
+        "sat": 5, "saturday": 5,
+        "sun": 6, "sunday": 6,
+    }
+
+    # Try matching by day of week
+    for name, weekday_num in _DAY_MAP.items():
+        if name in hint_lower:
+            matches = [ev for ev in events if ev.datetime_start.weekday() == weekday_num]
+            if matches:
+                return matches
+
+    # Try matching by month + day number (e.g., "March 25")
+    month_day = re.search(r"(march|april|may|june|july|aug|sept?|oct|nov|dec)\w*\s+(\d{1,2})", hint_lower)
+    if month_day:
+        day_num = int(month_day.group(2))
+        matches = [ev for ev in events if ev.datetime_start.day == day_num]
+        if matches:
+            return matches
+
+    return []
 
 
 async def _find_target_event(
