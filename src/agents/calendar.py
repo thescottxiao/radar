@@ -624,6 +624,17 @@ async def handle_assignment_claim(
     except Exception:
         logger.debug("Could not track transport claim for routine inference", exc_info=True)
 
+    # Check off transport prep item if both drop-off and pick-up are now assigned
+    if target_event.drop_off_by and target_event.pick_up_by and target_event.description:
+        updated_desc = target_event.description.replace(
+            "☐ Arrange drop-off/pick-up", "☑ Arrange drop-off/pick-up"
+        )
+        if updated_desc != target_event.description:
+            target_event.description = updated_desc
+            await events_dal.update_event(
+                session, family_id, target_event.id, description=updated_desc
+            )
+
     # Best-effort GCal sync (includes transport section in description)
     try:
         from src.actions.gcal import update_calendar_event
