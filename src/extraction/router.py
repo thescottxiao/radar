@@ -8,11 +8,13 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.extraction.schemas import IntentResult, IntentType
-from src.llm import HAIKU_MODEL, classify
+from src.llm import HAIKU_MODEL, SONNET_MODEL, classify, extract, generate
+from src.state import children as children_dal
 from src.state import events as events_dal
 from src.state import learning as learning_dal
 from src.state import memory as memory_dal
 from src.state import pending as pending_dal
+from src.state import preferences as pref_dal
 from src.state.models import PendingActionStatus, PendingActionType
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,8 @@ Intent categories:
 - add_child_info: Providing child info (e.g. "Jake's shoe size is 3")
 - approval_response: Responding to a pending action awaiting approval — includes approving, dismissing, providing details, correcting info, or updating prep tasks. extracted_params must include "action": "approve", "dismiss", or "edit_instruction"
 - event_update: Updating an event already on the calendar — marking tasks done, adding notes (e.g. "I bought the wedding gift")
+- set_preference: Caregiver is stating a preference or rule for how Radar should behave (e.g. "Don't message me before 7am", "Keep messages short", "I handle school stuff", "No activities on Sundays", "Budget for gifts is $30")
+- correct_learning: Correcting a fact or preference Radar learned (e.g. "Actually Emma goes to Washington Elementary", "Her birthday is March 28 not 27", "Change the gift budget to $40")
 - general_question: General question about the assistant or non-schedule topic
 - greeting: Greeting or small talk
 - unknown: Cannot determine intent
@@ -41,6 +45,8 @@ Rules:
 2. If no pending action is relevant, use recent conversation context to inform classification.
 3. event_update is only for events already on the calendar, not pending ones.
 4. If the context states "There are no pending actions awaiting approval", NEVER classify as approval_response.
+5. set_preference is for general behavior preferences, NOT for event-specific changes. "Move soccer to 3pm" is modify_event, not set_preference.
+6. correct_learning requires the word "actually" or a clear correction pattern ("not X, it's Y"). Simple new information is add_child_info.
 
 Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0, "extracted_params": {...}}
 """
@@ -238,6 +244,8 @@ async def route_intent(
         IntentType.add_child_info: _handle_add_child_info,
         IntentType.approval_response: _handle_approval_response,
         IntentType.event_update: _handle_event_update,
+        IntentType.set_preference: _handle_set_preference,
+        IntentType.correct_learning: _handle_correct_learning,
         IntentType.general_question: _handle_general_question,
         IntentType.greeting: _handle_greeting,
         IntentType.unknown: _handle_unknown,
@@ -1420,6 +1428,194 @@ Upcoming calendar events:
         return "Sorry, I couldn't process that update. Please try again."
 
 
+async def _handle_set_preference(
+    session: AsyncSession,
+    family_id: UUID,
+    intent: IntentResult,
+    message: str,
+    sender_id: UUID,
+) -> str:
+    """Handle preference-setting messages like 'Don't message me before 7am'."""
+    from pydantic import BaseModel, Field
+
+    class ExtractedPreference(BaseModel):
+        category: str = Field(
+            description="One of: pref_communication, pref_scheduling, pref_notification, pref_prep, pref_delegation, pref_decision"
+        )
+        fact: str = Field(description="The preference as a clear statement")
+        structured_key: str | None = Field(
+            default=None,
+            description="If this maps to a structured setting, one of: quiet_hours_start, quiet_hours_end, delegation_areas. Otherwise null.",
+        )
+        structured_value: str | None = Field(
+            default=None,
+            description="The value for the structured setting (e.g., '07:00' for quiet_hours_start, 'school,sports' for delegation_areas). Otherwise null.",
+        )
+
+    try:
+        extracted = await extract(
+            prompt=f"User message: {message}",
+            system=(
+                "Extract the preference being set by this caregiver. "
+                "Determine the category and express the preference as a clear, reusable statement. "
+                "If it maps to a structured setting (quiet hours or delegation areas), extract those values too.\n"
+                "quiet_hours_start/end should be in HH:MM format (24h).\n"
+                "delegation_areas should be comma-separated areas like 'school,sports,medical'."
+            ),
+            schema=ExtractedPreference,
+        )
+
+        # Handle structured preferences
+        if extracted.structured_key and extracted.structured_value:
+            from datetime import time as time_type
+
+            if extracted.structured_key in ("quiet_hours_start", "quiet_hours_end"):
+                parts = extracted.structured_value.split(":")
+                t = time_type(int(parts[0]), int(parts[1]))
+                await pref_dal.update_preference(
+                    session, sender_id, family_id,
+                    **{extracted.structured_key: t},
+                )
+            elif extracted.structured_key == "delegation_areas":
+                areas = [a.strip() for a in extracted.structured_value.split(",")]
+                await pref_dal.update_preference(
+                    session, sender_id, family_id,
+                    delegation_areas=areas,
+                )
+
+        # Always store as freeform learning too (for prompt context)
+        await learning_dal.create_learning(
+            session,
+            family_id=family_id,
+            category=extracted.category,
+            fact=extracted.fact,
+            source="Stated by caregiver in conversation",
+            confidence=1.0,
+            caregiver_id=sender_id,
+            confirmed=True,  # Explicit statements are immediately confirmed
+        )
+
+        return f"Got it — I'll remember that. ({extracted.fact})"
+
+    except Exception:
+        logger.exception("set_preference handler failed")
+        return "Got it, I'll keep that in mind."
+
+
+async def _handle_correct_learning(
+    session: AsyncSession,
+    family_id: UUID,
+    intent: IntentResult,
+    message: str,
+    sender_id: UUID,
+) -> str:
+    """Handle corrections like 'Actually Emma goes to Washington Elementary'."""
+    from pydantic import BaseModel, Field
+
+    # Get current confirmed learnings to find what's being corrected
+    current_learnings = await learning_dal.get_confirmed_learnings(session, family_id)
+
+    learnings_text = "\n".join(
+        f"- [id={le.id}] {le.fact} (category: {le.category})"
+        for le in current_learnings
+    ) if current_learnings else "(no current learnings)"
+
+    # Also check structured data
+    kids = await children_dal.get_children_for_family(session, family_id)
+    kids_text = "\n".join(
+        f"- {c.name}: school={c.school}, activities={c.activities}"
+        for c in kids
+    ) if kids else "(no children)"
+
+    class CorrectionMatch(BaseModel):
+        target_learning_id: str | None = Field(
+            default=None,
+            description="The UUID of the learning being corrected, if it matches one from the list. Otherwise null.",
+        )
+        target_structured_field: str | None = Field(
+            default=None,
+            description="If correcting a structured field, one of: child_school, child_activity. Otherwise null.",
+        )
+        target_child_name: str | None = Field(
+            default=None,
+            description="The child's name if the correction is about a child. Otherwise null.",
+        )
+        corrected_fact: str = Field(
+            description="The new, corrected fact as a clear statement",
+        )
+        corrected_value: str | None = Field(
+            default=None,
+            description="The extracted value only (e.g., just the school name 'Washington Elementary', "
+            "not the full sentence). Used for structured field updates.",
+        )
+
+    try:
+        matched = await extract(
+            prompt=f"User correction: {message}",
+            system=(
+                "The caregiver is correcting something Radar learned. Match the correction to "
+                "either an existing learning or a structured field.\n\n"
+                f"Current learnings:\n{learnings_text}\n\n"
+                f"Current children data:\n{kids_text}\n\n"
+                "If the correction matches a learning by ID, set target_learning_id. "
+                "If it's correcting a child's school or activity, set target_structured_field and target_child_name. "
+                "When setting a structured field, also set corrected_value to just the value "
+                "(e.g., 'Washington Elementary' not 'Emma goes to Washington Elementary')."
+            ),
+            schema=CorrectionMatch,
+        )
+
+        old_fact = None
+
+        # Handle structured field correction
+        if matched.target_structured_field and matched.target_child_name:
+            child = await children_dal.fuzzy_match_child(
+                session, family_id, matched.target_child_name
+            )
+            if child:
+                if matched.target_structured_field == "child_school":
+                    old_fact = f"{child.name}'s school: {child.school}"
+                    child.school = matched.corrected_value or matched.corrected_fact
+                    await session.flush()
+                elif matched.target_structured_field == "child_activity":
+                    # Activity corrections are complex (add/remove/replace) — store as learning
+                    logger.info("Activity correction for %s: %s", child.name, matched.corrected_fact)
+
+        # Handle freeform learning correction
+        if matched.target_learning_id:
+            from uuid import UUID as UUIDType
+            try:
+                learning_id = UUIDType(matched.target_learning_id)
+                old_learning = await session.get(learning_dal.FamilyLearning, learning_id)
+                if old_learning and old_learning.family_id == family_id:
+                    old_fact = old_learning.fact
+                    await learning_dal.supersede_learning(
+                        session, learning_id, family_id, matched.corrected_fact,
+                        source="Corrected by caregiver in conversation",
+                    )
+            except (ValueError, Exception):
+                logger.warning("Could not match learning ID: %s", matched.target_learning_id)
+
+        if old_fact:
+            return f"Updated — {old_fact} → {matched.corrected_fact}"
+        else:
+            # Store as a new confirmed learning
+            await learning_dal.create_learning(
+                session,
+                family_id=family_id,
+                category="child_school",  # default, will be refined
+                fact=matched.corrected_fact,
+                source="Corrected by caregiver in conversation",
+                confidence=1.0,
+                confirmed=True,
+            )
+            return f"Got it — {matched.corrected_fact}"
+
+    except Exception:
+        logger.exception("correct_learning handler failed")
+        return "Sorry, I couldn't process that correction. Could you try rephrasing?"
+
+
 async def _handle_general_question(
     session: AsyncSession,
     family_id: UUID,
@@ -1428,7 +1624,6 @@ async def _handle_general_question(
     sender_id: UUID,
 ) -> str:
     """Handle general questions using LLM."""
-    from src.llm import generate
 
     system = (
         "You are Radar, a friendly WhatsApp assistant that helps families coordinate "
