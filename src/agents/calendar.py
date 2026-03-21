@@ -77,6 +77,9 @@ The parent is volunteering to handle drop-off/pick-up for a child.
 Family children: {children_names}
 Upcoming events needing transport:
 {upcoming_events}
+{recent_context}
+IMPORTANT: If the recent conversation mentions a specific event, that is almost certainly
+the event the parent means — even if they don't name it explicitly.
 """
 
 RELEASE_EXTRACTION_SYSTEM = """\
@@ -453,9 +456,17 @@ async def handle_assignment_claim(
 
     upcoming_text = _format_events_for_prompt(events_needing_transport)
 
+    # Include recent conversation so the LLM knows which event was just discussed
+    recent_memories = await memory_dal.get_recent_messages(session, family_id, limit=5)
+    memory_lines = [m.content for m in recent_memories]
+    recent_context = ""
+    if memory_lines:
+        recent_context = "Recent conversation:\n" + "\n".join(memory_lines)
+
     system = ASSIGNMENT_EXTRACTION_SYSTEM.format(
         children_names=", ".join(ctx["children_names"]) if ctx["children_names"] else "none",
         upcoming_events=upcoming_text,
+        recent_context=recent_context,
     )
 
     extracted = await extract(
@@ -474,6 +485,15 @@ async def handle_assignment_claim(
             f"Your children are: {', '.join(ctx['children_names'])}.",
             [],
         )
+
+    # Re-fetch events with children eagerly loaded (the originals from
+    # build_family_context may have expired after the LLM + DB calls above)
+    from src.state.events import get_upcoming_events
+    fresh_events = await get_upcoming_events(session, family_id, days=14)
+    events_needing_transport = [
+        ev for ev in fresh_events
+        if not ev.drop_off_by or not ev.pick_up_by
+    ]
 
     # Filter to events linked to this child
     child_events = [

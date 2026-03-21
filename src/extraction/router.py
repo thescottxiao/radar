@@ -48,6 +48,7 @@ Rules:
 4. If the context states "There are no pending actions awaiting approval", NEVER classify as approval_response.
 5. set_preference is for general behavior preferences, NOT for event-specific changes. "Move soccer to 3pm" is modify_event, not set_preference.
 6. correct_learning requires the word "actually" or a clear correction pattern ("not X, it's Y"). Simple new information is share_info, not correct_learning.
+7. When a message mentions an event with a day/time (e.g., "We've got soccer practice Monday morning"), default to add_event. Only classify as modify_event if the message explicitly says to CHANGE, MOVE, RESCHEDULE, or UPDATE an existing event. A similar event title on the calendar does not make it modify_event — recurring activities often have multiple instances.
 
 Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0, "extracted_params": {...}}
 """
@@ -632,6 +633,13 @@ async def _link_children_and_setup_transport(
 
     except Exception:
         logger.debug("Child linkage / transport setup failed", exc_info=True)
+
+    # Always ensure children relationship is loaded to prevent lazy-load errors
+    # in callers that access event.children after this function returns
+    try:
+        await session.refresh(event, ["children"])
+    except Exception:
+        pass  # event.children will be None — callers already handle this
 
     return transport_result, message_lines
 
