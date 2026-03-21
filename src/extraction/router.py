@@ -493,6 +493,56 @@ async def _infer_child_from_activity(
     return None
 
 
+async def _generate_event_description(
+    title: str,
+    event_type: str,
+    location: str | None,
+    dt_str: str,
+    child_names: list[str],
+    has_children_linked: bool,
+) -> str | None:
+    """Generate a concise event description with prep checklist for manual events.
+
+    Returns None if the LLM determines no prep is needed.
+    """
+    from src.llm import generate
+
+    child_context = ""
+    if child_names:
+        child_context = f"\nChildren involved: {', '.join(child_names)}"
+
+    prompt = f"""\
+Event: {title}
+Type: {event_type}
+Date: {dt_str}
+Location: {location or "TBD"}{child_context}
+
+Generate a short event description with a prep checklist.
+Rules:
+- Use "☐" prefix for each prep task
+- Include ONLY tasks specific to this event type (3-5 items max)
+- For child activities (sports, lessons, camps, school events, playdates), include "☐ Arrange drop-off/pick-up"
+- Do NOT include generic filler like "confirm details", "check parking", "plan outfit", "check weather"
+- If nothing specific is needed, return just the event type as a one-line description
+
+Example for a kids' soccer practice:
+Soccer practice
+
+☐ Pack soccer bag (cleats, shin guards, water bottle)
+☐ Arrange drop-off/pick-up"""
+
+    try:
+        result = await generate(
+            prompt,
+            system="You are a concise family assistant. Generate a brief event description with a prep checklist. Keep it practical and specific.",
+        )
+        if result and result.strip():
+            return result.strip()
+    except Exception:
+        logger.debug("Could not generate description for '%s'", title)
+    return None
+
+
 async def _link_children_and_setup_transport(
     session: AsyncSession,
     family_id: UUID,
@@ -729,6 +779,22 @@ async def _handle_add_event(
         event_title=extracted.title, event_type=extracted.event_type,
     )
 
+    # Generate description with prep checklist for manual events (if no description yet)
+    dt_str = extracted.datetime_start.strftime("%a %b %d, %I:%M %p")
+    if not event.description:
+        child_names_linked = [c.name for c in (event.children or [])]
+        desc = await _generate_event_description(
+            title=extracted.title,
+            event_type=extracted.event_type or "other",
+            location=extracted.location,
+            dt_str=dt_str,
+            child_names=child_names_linked or extracted.child_names,
+            has_children_linked=bool(child_names_linked),
+        )
+        if desc:
+            event.description = desc
+            await session.flush()
+
     # Write to Google Calendar (source of truth)
     try:
         from src.actions.gcal import create_calendar_event
@@ -740,38 +806,17 @@ async def _handle_add_event(
         logger.exception("Failed to create GCal event for '%s' — saved locally only", extracted.title)
 
     # Build response
-    dt_str = extracted.datetime_start.strftime("%a %b %d, %I:%M %p")
     parts = [f"✅ Added to your calendar: *{extracted.title}*", f"{dt_str}"]
     if extracted.location:
         parts.append(f"📍 {extracted.location}")
 
-    # Generate prep tips (shown after event is added)
-    try:
-        tip_prompt = f"""\
-Event: {extracted.title}
-Date: {dt_str}
-Location: {extracted.location or "TBD"}
-
-List ONLY tasks that are clearly important and specific to this event type. Examples:
-- Birthday party → "Buy birthday gift"
-- Sports → "Pack gear bag"
-- Medical → "Bring insurance card"
-
-Do NOT include generic advice like "confirm details", "check parking", "plan outfit", \
-"get directions", or "check weather". If nothing specific is needed, return NOTHING.
-
-Use "•" prefix."""
-        tips = await generate(
-            tip_prompt,
-            system="You are a concise family assistant. Return only genuinely important, event-specific bullet points. If nothing specific is needed, return nothing at all.",
-        )
-        if tips and tips.strip():
+    # Show prep items from description
+    if event.description:
+        prep_lines = [line.strip() for line in event.description.split("\n") if line.strip().startswith("☐")]
+        if prep_lines:
             parts.append("")
-            parts.append("*Heads up:*")
-            tip_lines = [line.strip() for line in tips.strip().split("\n") if line.strip().startswith("•")]
-            parts.extend(tip_lines)
-    except Exception:
-        logger.debug("Could not generate prep tips for '%s'", extracted.title)
+            parts.append("*Prep:*")
+            parts.extend(prep_lines)
 
     # Add transport status lines
     parts.extend(transport_lines)
@@ -1535,6 +1580,22 @@ async def _create_event_from_pending(
         event_title=title, event_type=event_data.get("event_type"),
     )
 
+    # Generate description with prep checklist if not already present
+    dt_str = datetime_start.strftime("%a %b %d, %I:%M %p")
+    if not event.description:
+        child_names_linked = [c.name for c in (event.children or [])]
+        desc = await _generate_event_description(
+            title=title,
+            event_type=event_data.get("event_type", "other"),
+            location=event_data.get("location"),
+            dt_str=dt_str,
+            child_names=child_names_linked or event_data.get("child_names", []),
+            has_children_linked=bool(child_names_linked),
+        )
+        if desc:
+            event.description = desc
+            await session.flush()
+
     # Write to Google Calendar (source of truth)
     try:
         from src.actions.gcal import create_calendar_event
@@ -1545,40 +1606,17 @@ async def _create_event_from_pending(
     except Exception:
         logger.exception("Failed to create GCal event for '%s' — saved locally only", title)
 
-    dt_str = datetime_start.strftime("%a %b %d, %I:%M %p")
     parts = [f"✅ Added to your calendar: *{title}*", f"{dt_str}"]
     if event_data.get("location"):
         parts.append(f"📍 {event_data['location']}")
 
-    # Generate concise prep tips from the description — only the important ones
-    description = event_data.get("description", "")
-    if description:
-        try:
-            from src.llm import generate
-
-            tip_prompt = f"""\
-Event: {title}
-Date: {dt_str}
-Location: {event_data.get('location', 'TBD')}
-Details: {description}
-
-List ONLY tasks that are clearly important and specific to this event type. Examples:
-- Birthday party → "Buy birthday gift"
-- Sports → "Pack gear bag"
-- Medical → "Bring insurance card"
-
-Do NOT include generic advice like "confirm details", "check parking", "plan outfit", \
-"get directions", or "check weather". If nothing specific is needed, return NOTHING.
-
-Use "•" prefix."""
-            tips = await generate(tip_prompt, system="You are a concise family assistant. Return only genuinely important, event-specific bullet points. If nothing specific is needed, return nothing at all.")
-            if tips and tips.strip():
-                parts.append("")
-                parts.append("*Heads up:*")
-                tip_lines = [line.strip() for line in tips.strip().split("\n") if line.strip().startswith("•")]
-                parts.extend(tip_lines)
-        except Exception:
-            logger.debug("Could not generate prep tips for '%s'", title)
+    # Show prep items from description
+    if event.description:
+        prep_lines = [line.strip() for line in event.description.split("\n") if line.strip().startswith("☐")]
+        if prep_lines:
+            parts.append("")
+            parts.append("*Prep:*")
+            parts.extend(prep_lines)
 
     # Add transport status lines
     parts.extend(transport_lines)
