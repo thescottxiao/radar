@@ -119,6 +119,10 @@ src/
 8. **Event updates push to GCal.** When a user says something like "I bought the gift," the `event_update` handler matches it to an event (via conversation context or GCal search), updates the description (e.g., ☐ → ☑), and pushes the change to GCal via `events().patch()`.
 9. **GCal webhook changes do NOT generate WhatsApp notifications.** GCal is the source of truth — changes made directly in GCal (adds, updates, deletions) are synced to the local Event Registry silently. WhatsApp notifications for events come only from email ingestion.
 10. **Cancel/modify handlers use smart event matching.** `_handle_cancel_event` and `_handle_modify_event` use a two-tier context strategy (conversation memory + GCal search with 90-day window) and LLM matching to identify events, same as `_handle_event_update`.
+11. **Transport coordination only applies to child events with 2+ caregivers.** Gate on: `family.children` non-empty AND `event.child_id IS NOT NULL` AND `len(active_caregivers) >= 2`. Single-caregiver families get silent auto-assignment. Families with no children skip transport entirely.
+12. **Transport routines are inferred, not asked.** After 3 consistent claims by the same caregiver for the same (recurring_schedule, day_of_week, role), create an unconfirmed FamilyLearning. Confirmed via weekly summary with no correction. Never ask "who usually handles pickup?" upfront.
+13. **Sibling transport conflicts are flagged, not resolved.** When the same caregiver is assigned to overlapping events (±30 min) for different children at different locations, notify all caregivers. Do not propose which caregiver should swap.
+14. **Transport swaps clear the instance, not the routine.** "I can't do pickup Thursday" clears that event's assignment but leaves the RecurringSchedule default intact for future weeks.
 
 ### WhatsApp Rules
 

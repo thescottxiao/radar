@@ -154,6 +154,23 @@ class ExtractedAssignment(BaseModel):
     )
 
 
+class ExtractedRelease(BaseModel):
+    """Transport release extracted from message (caregiver can't cover an assignment)."""
+
+    child_name: str | None = Field(
+        default=None,
+        description="Name of child, if mentioned",
+    )
+    event_hint: str | None = Field(
+        default=None,
+        description="Which event this release is for, if mentioned",
+    )
+    role: str = Field(
+        default="both",
+        description="One of: drop_off, pick_up, both",
+    )
+
+
 # ── Calendar query context ─────────────────────────────────────────────
 
 

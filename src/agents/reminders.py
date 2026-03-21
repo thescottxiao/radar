@@ -9,8 +9,10 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agents.calendar import build_caregiver_name_map
 from src.llm import generate
 from src.state import events as event_dal
+from src.state import families as families_dal
 from src.state import learning as learning_dal
 
 logger = logging.getLogger(__name__)
@@ -81,16 +83,19 @@ async def generate_daily_digest(
 
     transport_text = ""
     if unclaimed_transport:
+        # Build caregiver name lookup for per-role status
+        caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+        cg_map = build_caregiver_name_map(caregivers)
+
         lines = []
         for e in unclaimed_transport:
             time_str = e.datetime_start.strftime("%I:%M %p") if e.datetime_start else "TBD"
-            needs = []
-            if e.drop_off_by is None:
-                needs.append("drop-off")
-            if e.pick_up_by is None:
-                needs.append("pick-up")
-            lines.append(f"- {e.title} at {time_str}: needs {' and '.join(needs)}")
-        transport_text = "Transport needed:\n" + "\n".join(lines)
+            drop_off_str = cg_map.get(e.drop_off_by, "unassigned") if e.drop_off_by else "unassigned"
+            pick_up_str = cg_map.get(e.pick_up_by, "unassigned") if e.pick_up_by else "unassigned"
+            lines.append(
+                f"- {e.title} at {time_str} — drop-off: {drop_off_str}, pick-up: {pick_up_str}"
+            )
+        transport_text = "Transport status:\n" + "\n".join(lines)
 
     sections = [s for s in [events_text, deadlines_text, transport_text] if s]
     context = "\n\n".join(sections)
@@ -200,6 +205,31 @@ Do not add any events or information not in the data below.
             family_id,
         )
 
+    # Confirm previously surfaced learnings (no correction = confirmed)
+    # and apply any transport routine confirmations
+    try:
+        previously_surfaced = await learning_dal.get_learnings_by_category(
+            session, family_id, "transport_routine"
+        )
+        to_confirm = [
+            le.id for le in previously_surfaced
+            if le.surfaced_in_summary and not le.confirmed
+        ]
+        if to_confirm:
+            await learning_dal.confirm_learnings(session, family_id, to_confirm)
+            logger.info(
+                "Confirmed %d transport routines for family %s",
+                len(to_confirm),
+                family_id,
+            )
+
+            # Write confirmed routines to RecurringSchedule defaults
+            from src.agents.calendar import apply_confirmed_transport_routines
+
+            await apply_confirmed_transport_routines(session, family_id)
+    except Exception:
+        logger.debug("Could not process transport routine confirmations", exc_info=True)
+
     logger.info("Generated weekly summary for family %s", family_id)
     return summary.strip()
 
@@ -232,7 +262,8 @@ async def check_immediate_triggers(
                 f"Reply to let me know if you'd like to accept or decline."
             )
 
-    # Unclaimed transport within 48h
+    # Unclaimed transport within 48h (but more than 4h away — avoid double-notifying)
+    urgent_cutoff = now + timedelta(hours=4)
     upcoming = await event_dal.get_events_in_range(session, family_id, now, cutoff)
     for event in upcoming:
         needs = []
@@ -242,10 +273,19 @@ async def check_immediate_triggers(
             needs.append("pick-up")
         if needs:
             time_str = event.datetime_start.strftime("%A at %I:%M %p")
-            messages.append(
-                f"\"{event.title}\" on {time_str} still needs {' and '.join(needs)} assigned. "
-                f"Who's handling it?"
-            )
+            if event.datetime_start <= urgent_cutoff:
+                # 4h urgent tier
+                messages.append(
+                    f"⚠️ \"{event.title}\" at "
+                    f"{event.datetime_start.strftime('%I:%M %p')} TODAY still has no "
+                    f"{' and '.join(needs)} assigned!"
+                )
+            else:
+                # Standard 48h tier
+                messages.append(
+                    f"\"{event.title}\" on {time_str} still needs "
+                    f"{' and '.join(needs)} assigned. Who's handling it?"
+                )
 
     if messages:
         logger.info(

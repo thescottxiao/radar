@@ -17,6 +17,7 @@ class IntentType(enum.StrEnum):
     modify_event = "modify_event"
     cancel_event = "cancel_event"
     assign_transport = "assign_transport"
+    release_transport = "release_transport"
     rsvp_response = "rsvp_response"
     add_child_info = "add_child_info"
     approval_response = "approval_response"  # approve/dismiss/edit pending action
