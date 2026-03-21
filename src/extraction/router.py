@@ -1583,14 +1583,14 @@ async def _create_event_from_pending(
     # Generate description with prep checklist if not already present
     dt_str = datetime_start.strftime("%a %b %d, %I:%M %p")
     if not event.description:
-        child_names_linked = [c.name for c in (event.children or [])]
+        child_names = child_names_from_data or event_data.get("child_names", [])
         desc = await _generate_event_description(
             title=title,
             event_type=event_data.get("event_type", "other"),
             location=event_data.get("location"),
             dt_str=dt_str,
-            child_names=child_names_linked or event_data.get("child_names", []),
-            has_children_linked=bool(child_names_linked),
+            child_names=child_names,
+            has_children_linked=bool(child_names),
         )
         if desc:
             event.description = desc
