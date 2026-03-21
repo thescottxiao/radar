@@ -202,6 +202,46 @@ def _check_approval_response(
     return None
 
 
+def _extract_json_object(text: str) -> dict | None:
+    """Extract the first complete JSON object from text that may contain trailing content."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    brace_start = text.find("{")
+    if brace_start == -1:
+        return None
+
+    # Walk forward counting braces to find the matching close
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(brace_start, len(text)):
+        c = text[i]
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if c == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[brace_start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
 def _parse_classification_response(raw: str) -> IntentResult:
     """Parse the LLM classification response into an IntentResult."""
     # Strip markdown code fences if present
@@ -213,27 +253,15 @@ def _parse_classification_response(raw: str) -> IntentResult:
         text = text.strip()
 
     # Extract JSON object — the LLM may append reasoning text after the JSON
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        # Try to find a JSON object in the text
-        brace_start = text.find("{")
-        brace_end = text.rfind("}")
-        if brace_start != -1 and brace_end > brace_start:
-            try:
-                data = json.loads(text[brace_start:brace_end + 1])
-            except json.JSONDecodeError:
-                data = None
-        else:
-            data = None
+    data = _extract_json_object(text)
 
-        if data is None:
-            logger.warning("Could not parse classification response: %s", text[:200])
-            return IntentResult(
-                intent=IntentType.unknown,
-                confidence=0.0,
-                extracted_params={"raw_response": text},
-            )
+    if data is None:
+        logger.warning("Could not parse classification response: %s", text[:200])
+        return IntentResult(
+            intent=IntentType.unknown,
+            confidence=0.0,
+            extracted_params={"raw_response": text},
+        )
 
     intent_str = data.get("intent", "unknown")
     try:

@@ -55,6 +55,19 @@ class TestParseClassificationResponse:
         assert result.intent == IntentType.general_question
         assert result.confidence == 0.95
 
+    def test_parse_json_with_nested_braces_and_trailing_text(self):
+        """Reproduces the real failure: nested extracted_params + reasoning with braces."""
+        raw = (
+            '{\n  "intent": "approval_response",\n  "confidence": 0.45,\n'
+            '  "extracted_params": {\n    "action": "dismiss",\n'
+            '    "reason": "User appears to be asking a general question"\n  }\n}\n'
+            '**Reasoning:** The user message doesn\'t address the pending {action}.'
+        )
+        result = _parse_classification_response(raw)
+        assert result.intent == IntentType.approval_response
+        assert result.confidence == 0.45
+        assert result.extracted_params["action"] == "dismiss"
+
     def test_parse_missing_fields_uses_defaults(self):
         raw = json.dumps({"intent": "greeting"})
         result = _parse_classification_response(raw)
