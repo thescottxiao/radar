@@ -1986,14 +1986,18 @@ async def _handle_general_question(
     message: str,
     sender_id: UUID,
 ) -> str:
-    """Handle general questions using LLM."""
+    """Handle general questions using family context."""
+    from src.agents.context import build_family_context
+
+    ctx = await build_family_context(session, family_id, caregiver_id=sender_id)
 
     system = (
         "You are Radar, a friendly WhatsApp assistant that helps families coordinate "
-        "kids' activities. Answer the user's question helpfully and concisely. "
+        "kids' activities. Answer the user's question helpfully and concisely.\n\n"
         "If the question is about your capabilities, explain that you can: "
         "manage calendars, track events, handle RSVPs, coordinate transport, "
-        "and send reminders."
+        "and send reminders.\n\n"
+        f"Here is what you know about this family:\n{ctx['family_context']}"
     )
     try:
         return await generate(message, system)
