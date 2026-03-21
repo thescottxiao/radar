@@ -29,10 +29,10 @@ async def lifespan(app: FastAPI):
         logger.info("Database connected")
 
         # Clear stale pending actions so they don't confuse intent classification
-        from src.db import async_session
+        from src.db import async_session_factory
         from src.state.pending import expire_all_pending
 
-        async with async_session() as session:
+        async with async_session_factory() as session:
             expired = await expire_all_pending(session)
             await session.commit()
             if expired:
