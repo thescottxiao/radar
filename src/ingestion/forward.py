@@ -4,6 +4,7 @@ Handles emails forwarded to family-{id}@radar.app addresses.
 Parses family_id from the to address, verifies sender, and passes to extraction.
 """
 
+import base64
 import logging
 import re
 from uuid import UUID
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.actions.state import persist_extraction
 from src.extraction.email import process_email
+from src.ingestion.ics import is_ics_file
 from src.ingestion.schemas import EmailContent
 from src.state import families as families_dal
 
@@ -93,6 +95,11 @@ async def handle_forwarded_email(
         date=payload.get("date"),
     )
 
+    # Process ICS attachments if present
+    await _process_forwarded_ics_attachments(
+        session, family_id, payload.get("attachments", [])
+    )
+
     # Process through extraction pipeline
     result = await process_email(
         session, family_id, email, source="forwarded"
@@ -127,3 +134,57 @@ async def handle_forwarded_email(
         len(result.events),
         len(result.action_items),
     )
+
+
+async def _process_forwarded_ics_attachments(
+    session: AsyncSession,
+    family_id: UUID,
+    raw_attachments: list[dict],
+) -> None:
+    """Process ICS attachments from a forwarded email payload."""
+    from src.ingestion.ics import process_ics_attachment, send_ics_batch_confirmation
+
+    for att in raw_attachments:
+        filename = att.get("filename", att.get("name", ""))
+        content_type = att.get("content_type", att.get("type", ""))
+
+        if not is_ics_file(filename, content_type):
+            continue
+
+        att_content = att.get("content", "")
+        if not att_content:
+            continue
+
+        # Some inbound email services base64-encode attachment content
+        if att.get("content_transfer_encoding") == "base64" or att.get("base64"):
+            try:
+                att_content = base64.b64decode(att_content).decode("utf-8", errors="replace")
+            except Exception:
+                logger.warning("Failed to base64-decode ICS attachment '%s'", filename)
+                continue
+
+        try:
+            results = await process_ics_attachment(session, family_id, att_content)
+        except Exception:
+            logger.exception("Failed to process ICS attachment '%s' from forwarded email", filename)
+            continue
+
+        if not results:
+            continue
+
+        new_events = [event for event, is_new in results if is_new]
+        if not new_events:
+            continue
+
+        try:
+            await send_ics_batch_confirmation(
+                session, family_id, new_events, filename,
+                source_label=f"a forwarded email ({filename})",
+            )
+        except Exception:
+            logger.exception("Failed to send ICS batch confirmation for '%s'", filename)
+
+        logger.info(
+            "Processed ICS attachment '%s' from forwarded email: family=%s, %d new events",
+            filename, family_id, len(new_events),
+        )

@@ -220,20 +220,25 @@ class ChildFriend(Base):
     __table_args__ = (Index("idx_child_friends_family", "family_id"),)
 
 
-class GearInventory(Base):
-    __tablename__ = "gear_inventory"
+class CaregiverPreferences(Base):
+    __tablename__ = "caregiver_preferences"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    child_id: Mapped[UUID] = mapped_column(ForeignKey("children.id", ondelete="CASCADE"), nullable=False)
+    caregiver_id: Mapped[UUID] = mapped_column(
+        ForeignKey("caregivers.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
     family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
-    item: Mapped[str] = mapped_column(Text, nullable=False)
-    size: Mapped[str | None] = mapped_column(Text)
-    condition: Mapped[str | None] = mapped_column(Text)
-    last_updated: Mapped[datetime] = mapped_column(
+    quiet_hours_start: Mapped[time | None] = mapped_column(Time)
+    quiet_hours_end: Mapped[time | None] = mapped_column(Time)
+    delegation_areas: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("NOW()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("NOW()")
     )
 
-    __table_args__ = (Index("idx_gear_family", "family_id"),)
+    __table_args__ = (Index("idx_caregiver_prefs_family", "family_id"),)
 
 
 # ── Event system ────────────────────────────────────────────────────────
@@ -418,7 +423,10 @@ class ActionItemChild(Base):
     family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
 
 
-# ── Family learning ─────────────────────────────────────────────────────
+# ── Family learning & preferences ──────────────────────────────────────
+# This table serves two roles:
+#   1. Staging area for factual observations that graduate to structured tables
+#   2. Permanent store for freeform preferences (pref_* categories) injected into LLM prompts
 
 
 class FamilyLearning(Base):
@@ -426,6 +434,9 @@ class FamilyLearning(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
+    caregiver_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("caregivers.id", ondelete="SET NULL")
+    )  # NULL = family-wide, set = per-caregiver
     category: Mapped[str] = mapped_column(Text, nullable=False)
     entity_type: Mapped[str | None] = mapped_column(Text)
     entity_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
@@ -434,11 +445,17 @@ class FamilyLearning(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     surfaced_in_summary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    graduated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    superseded_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("family_learnings.id")
+    )  # points to replacement on correction
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("NOW()")
     )
 
-    __table_args__ = (Index("idx_learnings_family", "family_id"),)
+    __table_args__ = (
+        Index("idx_learnings_family", "family_id"),
+    )
 
 
 # ── Conversation memory ─────────────────────────────────────────────────

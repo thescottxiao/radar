@@ -63,12 +63,19 @@ class ExtractedActionItem(BaseModel):
 
 
 class ExtractedLearning(BaseModel):
-    """A family learning inferred from email content."""
+    """A family learning or preference inferred from email content."""
 
-    category: str = Field(description="e.g., preference, routine, allergy, contact")
+    category: str = Field(
+        description=(
+            "One of: child_school, child_activity, child_friend, contact, "
+            "gear, schedule_pattern, budget, "
+            "pref_communication, pref_scheduling, pref_notification, "
+            "pref_prep, pref_delegation, pref_decision"
+        )
+    )
     fact: str
     entity_type: str | None = Field(
-        default=None, description="child, caregiver, or family"
+        default=None, description="child, caregiver, or external_contact"
     )
     entity_name: str | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -200,9 +207,12 @@ Extract the following from the email:
    Player: [child name]"
 
 2. Action items: forms to sign, payments due, items to bring/purchase, RSVPs needed
-3. Learnings: preferences, routines, contacts, allergies, or other family facts.
-   For category, use one of: child_school, child_activity, child_friend, contact,
-   gear, preference, schedule_pattern, budget.
+3. Learnings: facts and preferences about the family.
+   For category, use one of:
+   - Facts: child_school, child_activity, child_friend, contact, gear, schedule_pattern, budget
+   - Preferences: pref_communication, pref_scheduling, pref_notification, pref_prep, pref_delegation, pref_decision
+   Use pref_* categories for things that describe how the family operates or prefers things
+   (e.g., budget norms from registration fees → pref_decision, schedule patterns → schedule_pattern).
 
 For each extracted item, assign a confidence score (0.0-1.0):
 - 1.0: Explicit, unambiguous information (e.g., "Soccer practice on March 15 at 3pm")

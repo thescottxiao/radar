@@ -171,6 +171,7 @@ class TestWeeklySummary:
         mock_event_dal.get_events_needing_rsvp = AsyncMock(return_value=[])
         mock_learning_dal.get_unsurfaced_learnings = AsyncMock(return_value=[])
         mock_learning_dal.mark_surfaced = AsyncMock()
+        mock_learning_dal.auto_confirm_previously_surfaced = AsyncMock(return_value=[])
         mock_generate.return_value = "This week looks clear! No events scheduled."
 
         result = await generate_weekly_summary(mock_session, family_id)
@@ -195,6 +196,7 @@ class TestWeeklySummary:
         mock_event_dal.get_events_needing_rsvp = AsyncMock(return_value=[])
         mock_learning_dal.get_unsurfaced_learnings = AsyncMock(return_value=learnings)
         mock_learning_dal.mark_surfaced = AsyncMock()
+        mock_learning_dal.auto_confirm_previously_surfaced = AsyncMock(return_value=[])
         mock_generate.return_value = "Weekly summary with learnings"
 
         await generate_weekly_summary(mock_session, family_id)
@@ -225,6 +227,7 @@ class TestWeeklySummary:
         mock_event_dal.get_events_needing_rsvp = AsyncMock(return_value=[rsvp_event])
         mock_learning_dal.get_unsurfaced_learnings = AsyncMock(return_value=[])
         mock_learning_dal.mark_surfaced = AsyncMock()
+        mock_learning_dal.auto_confirm_previously_surfaced = AsyncMock(return_value=[])
         mock_generate.return_value = "RSVPs needed: Sophia's Birthday Party"
 
         result = await generate_weekly_summary(mock_session, family_id)

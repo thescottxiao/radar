@@ -130,18 +130,37 @@ async def generate_weekly_summary(
     - Week ahead events
     - Unsurfaced FamilyLearning entries (marks them as surfaced)
     - Prep status for upcoming events
+    - Auto-confirms previously surfaced learnings (confirmation lifecycle)
+    - Triggers graduation for newly confirmed learnings
 
     Always generates (never returns None).
     """
     now = datetime.now(UTC)
     week_end = now + timedelta(days=7)
 
+    # ── Confirmation lifecycle ─────────────────────────────────────────
+    # Auto-confirm learnings surfaced in the PREVIOUS summary cycle
+    # that haven't been corrected since.
+    newly_confirmed_ids = await learning_dal.auto_confirm_previously_surfaced(
+        session, family_id
+    )
+    if newly_confirmed_ids:
+        logger.info(
+            "Auto-confirmed %d learnings for family %s",
+            len(newly_confirmed_ids),
+            family_id,
+        )
+        # Trigger graduation for newly confirmed learnings
+        await _graduate_confirmed_learnings(session, family_id, newly_confirmed_ids)
+
+    # ── Gather summary data ────────────────────────────────────────────
+
     # Week ahead events
     week_events = await event_dal.get_events_in_range(
         session, family_id, now, week_end
     )
 
-    # Unsurfaced learnings
+    # Unsurfaced learnings (new this cycle)
     unsurfaced = await learning_dal.get_unsurfaced_learnings(session, family_id)
 
     # Events needing RSVP
@@ -232,6 +251,50 @@ Do not add any events or information not in the data below.
 
     logger.info("Generated weekly summary for family %s", family_id)
     return summary.strip()
+
+
+async def _graduate_confirmed_learnings(
+    session: AsyncSession, family_id: UUID, learning_ids: list[UUID]
+) -> None:
+    """Promote newly confirmed learnings to structured tables where applicable.
+
+    Graduation map:
+    - child_school → update children.school
+    - child_activity → append to children.activities
+    - child_friend → create ChildFriend row
+    - contact → update ChildFriend.parent_contact
+    """
+    from src.state.models import Child, FamilyLearning
+
+    for learning_id in learning_ids:
+        learning = await session.get(FamilyLearning, learning_id)
+        if not learning or learning.graduated:
+            continue
+
+        graduated = False
+
+        if learning.category == "child_school" and learning.entity_id:
+            child = await session.get(Child, learning.entity_id)
+            if child and child.family_id == family_id:
+                child.school = learning.fact
+                graduated = True
+
+        elif learning.category == "child_activity" and learning.entity_id:
+            child = await session.get(Child, learning.entity_id)
+            if child and child.family_id == family_id:
+                activities = child.activities or []
+                if learning.fact not in activities:
+                    child.activities = [*activities, learning.fact]
+                graduated = True
+
+        if graduated:
+            await learning_dal.graduate_learning(session, learning_id, family_id)
+            logger.info(
+                "Graduated learning %s (category=%s) for family %s",
+                learning_id,
+                learning.category,
+                family_id,
+            )
 
 
 # ── Immediate Triggers ────────────────────────────────────────────────

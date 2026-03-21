@@ -80,17 +80,21 @@ CREATE TABLE child_friends (
 
 CREATE INDEX idx_child_friends_family ON child_friends(family_id);
 
-CREATE TABLE gear_inventory (
+-- gear_inventory: PUNTED — needs a more comprehensive design for inventorying
+-- child possessions. Keeping the category in family_learnings as freeform for now.
+
+CREATE TABLE caregiver_preferences (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    child_id        UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+    caregiver_id    UUID NOT NULL UNIQUE REFERENCES caregivers(id) ON DELETE CASCADE,
     family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
-    item            TEXT NOT NULL,
-    size            TEXT,
-    condition       TEXT,  -- good, needs_replacement, borrowed
-    last_updated    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    quiet_hours_start TIME,          -- don't send messages before this time
+    quiet_hours_end   TIME,          -- don't send messages after this time
+    delegation_areas  TEXT[],        -- e.g. {'school', 'sports', 'medical'}
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_gear_family ON gear_inventory(family_id);
+CREATE INDEX idx_caregiver_prefs_family ON caregiver_preferences(family_id);
 
 -- ============================================================
 -- Event system
@@ -257,15 +261,23 @@ CREATE TABLE action_item_children (
 );
 
 -- ============================================================
--- Family learning (silent inference from emails/conversations)
+-- Family learning & preferences (facts + freeform preferences from emails/conversations)
 -- ============================================================
+-- This table serves two roles:
+--   1. Staging area for factual observations that graduate to structured tables
+--   2. Permanent store for freeform preferences (pref_* categories) injected into LLM prompts
 
 CREATE TABLE family_learnings (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    caregiver_id    UUID REFERENCES caregivers(id) ON DELETE SET NULL,  -- NULL = family-wide, set = per-caregiver
     category        TEXT NOT NULL CHECK (category IN (
+        -- Facts (graduate to structured tables when confirmed)
         'child_school', 'child_activity', 'child_friend', 'contact',
-        'gear', 'preference', 'schedule_pattern', 'budget'
+        'gear', 'schedule_pattern', 'budget',
+        -- Preferences (stay as freeform strings for LLM prompt injection)
+        'pref_communication', 'pref_scheduling', 'pref_notification',
+        'pref_prep', 'pref_delegation', 'pref_decision'
     )),
     entity_type     TEXT CHECK (entity_type IN ('child', 'caregiver', 'external_contact')),
     entity_id       UUID,  -- FK to children or caregivers, nullable
@@ -274,11 +286,15 @@ CREATE TABLE family_learnings (
     confidence      FLOAT NOT NULL DEFAULT 0.5,
     confirmed       BOOLEAN NOT NULL DEFAULT FALSE,
     surfaced_in_summary BOOLEAN NOT NULL DEFAULT FALSE,
+    graduated       BOOLEAN NOT NULL DEFAULT FALSE,  -- true when promoted to structured table
+    superseded_by   UUID REFERENCES family_learnings(id),  -- points to replacement on correction
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_learnings_family ON family_learnings(family_id);
 CREATE INDEX idx_learnings_unsurfaced ON family_learnings(family_id, surfaced_in_summary) WHERE surfaced_in_summary = FALSE;
+CREATE INDEX idx_learnings_caregiver ON family_learnings(caregiver_id) WHERE caregiver_id IS NOT NULL;
+CREATE INDEX idx_learnings_active ON family_learnings(family_id, confirmed) WHERE confirmed = TRUE AND graduated = FALSE AND superseded_by IS NULL;
 
 -- ============================================================
 -- Conversation memory
@@ -395,7 +411,7 @@ ALTER TABLE families ENABLE ROW LEVEL SECURITY;
 ALTER TABLE caregivers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE children ENABLE ROW LEVEL SECURITY;
 ALTER TABLE child_friends ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gear_inventory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE caregiver_preferences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE recurring_schedules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE schedule_exceptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sent_emails ENABLE ROW LEVEL SECURITY;
@@ -423,7 +439,7 @@ CREATE POLICY tenant_isolation_children ON children
 CREATE POLICY tenant_isolation_child_friends ON child_friends
     USING (family_id = current_setting('app.current_family_id')::UUID);
 
-CREATE POLICY tenant_isolation_gear ON gear_inventory
+CREATE POLICY tenant_isolation_caregiver_prefs ON caregiver_preferences
     USING (family_id = current_setting('app.current_family_id')::UUID);
 
 CREATE POLICY tenant_isolation_recurring_schedules ON recurring_schedules
