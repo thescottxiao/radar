@@ -70,21 +70,27 @@ async def build_family_context(
     today = datetime.now(UTC).strftime("%Y-%m-%d")
 
     # Confirmed learnings (non-preference facts that haven't graduated)
-    learnings = await learning_dal.get_confirmed_learnings(session, family_id)
+    learnings = []
+    preferences = []
+    try:
+        learnings = await learning_dal.get_confirmed_learnings(session, family_id)
+        preferences = await learning_dal.get_active_preferences(
+            session, family_id, caregiver_id
+        )
+    except Exception:
+        logger.debug("Could not load learnings/preferences for family %s", family_id)
     learnings_text = _format_learnings(learnings)
-
-    # Active preferences (freeform)
-    preferences = await learning_dal.get_active_preferences(
-        session, family_id, caregiver_id
-    )
     preferences_text = _format_preferences(preferences)
 
-    # Structured preferences
+    # Structured preferences (optional — table may not exist yet)
     structured_prefs = None
     if caregiver_id:
-        structured_prefs = await pref_dal.get_or_create_preferences(
-            session, caregiver_id, family_id
-        )
+        try:
+            structured_prefs = await pref_dal.get_or_create_preferences(
+                session, caregiver_id, family_id
+            )
+        except Exception:
+            logger.debug("Could not load structured preferences for caregiver %s", caregiver_id)
 
     # Build full context string
     sections = [
