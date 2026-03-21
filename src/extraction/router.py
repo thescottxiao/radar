@@ -1989,7 +1989,20 @@ async def _handle_general_question(
     """Handle general questions using family context."""
     from src.agents.context import build_family_context
 
-    ctx = await build_family_context(session, family_id, caregiver_id=sender_id)
+    try:
+        ctx = await build_family_context(session, family_id, caregiver_id=sender_id)
+        logger.info(
+            "general_question context for family %s: children=%s, caregivers=%s, learnings=%d, prefs=%d",
+            family_id,
+            ctx.get("children_names"),
+            ctx.get("caregiver_names"),
+            len(ctx.get("learnings", [])),
+            len(ctx.get("preferences", [])),
+        )
+        logger.debug("general_question family_context:\n%s", ctx["family_context"])
+    except Exception:
+        logger.exception("Failed to build family context for general_question")
+        ctx = {"family_context": "(no family data available)"}
 
     system = (
         "You are Radar, a friendly WhatsApp assistant that helps families coordinate "
