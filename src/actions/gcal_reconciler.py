@@ -118,6 +118,15 @@ async def reconcile_family(
     # Case 2: GCal event exists with no local match → import
     for gcal_id, gev in gcal_by_id.items():
         if gcal_id not in local_by_gcal_id:
+            # Safety check: query DB for this gcal ref in case it was created
+            # by a concurrent reconciliation or webhook handler
+            ref_check = await events_dal.get_events_by_source_ref(
+                session, family_id, f"gcal:{gcal_id}"
+            )
+            if ref_check:
+                stats["skipped"] += 1
+                continue
+
             title = gev.get("title", "Untitled")
             start_str = gev.get("start", "")
             try:
