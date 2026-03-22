@@ -345,13 +345,12 @@ async def route_intent(
 
 async def _get_local_now(session: AsyncSession, family_id: UUID) -> datetime:
     """Get the current datetime in the family's local timezone."""
-    from zoneinfo import ZoneInfo
-
     from src.state import families as families_dal
+    from src.utils.timezone import get_family_now
 
     family = await families_dal.get_family(session, family_id)
-    family_tz = ZoneInfo(family.timezone) if family else ZoneInfo("America/New_York")
-    return datetime.now(family_tz)
+    family_tz = family.timezone if family else "America/New_York"
+    return get_family_now(family_tz)
 
 
 async def _gather_event_context(
@@ -1003,6 +1002,11 @@ async def _handle_query_schedule(
 ) -> str:
     """Handle query_schedule intent: query local DB (authoritative) with GCal fallback."""
     from src.llm import generate
+    from src.state import families as families_dal
+
+    # Get family timezone for date boundary calculations
+    family = await families_dal.get_family(session, family_id)
+    family_tz = family.timezone if family else "America/New_York"
 
     # Determine query range from params
     days = intent.extracted_params.get("days", 7)
@@ -1011,10 +1015,12 @@ async def _handle_query_schedule(
     except (ValueError, TypeError):
         days = 7
 
-    # Query local DB first (authoritative)
+    # Query local DB first (authoritative), using family timezone for boundaries
     event_lines = []
     source = "local"
-    events = await events_dal.get_upcoming_events(session, family_id, days=days)
+    events = await events_dal.get_upcoming_events(
+        session, family_id, days=days, family_timezone=family_tz
+    )
     for ev in events:
         dt_str = ev.datetime_start.strftime("%a %b %d, %I:%M %p")
         line = f"- {ev.title} — {dt_str}"
@@ -1060,7 +1066,8 @@ async def _handle_query_schedule(
     system = (
         "You are Radar, a friendly family calendar assistant. "
         "Summarize the upcoming schedule naturally and concisely. "
-        "Use a warm, helpful tone. Keep it brief."
+        "Use a warm, helpful tone. Keep it brief. "
+        f"The family is in the {family_tz} timezone — display all times in their local time."
     )
     prompt = f"User asked: {message}\n\nUpcoming events:\n{event_list}"
 
@@ -1409,6 +1416,7 @@ async def _handle_cancel_scope(
 
     Called from the button handler when the user taps a cancel scope button.
     """
+    from src.state import families as families_dal
     from src.state import outbox as outbox_dal
     from src.state import schedules as schedules_dal
 
@@ -1441,10 +1449,14 @@ async def _handle_cancel_scope(
 
             schedule = await schedules_dal.get_recurring_schedule(session, family_id, schedule_id)
             if schedule:
-                schedule.end_date = date.today()
+                family = await families_dal.get_family(session, family_id)
+                family_tz = family.timezone if family else "America/New_York"
+                from src.utils.timezone import get_family_today
+                today_local = get_family_today(family_tz)
+                schedule.end_date = today_local
                 # Update RRULE to add UNTIL clause
                 if schedule.rrule and "UNTIL=" not in schedule.rrule:
-                    schedule.rrule = schedule.rrule + f";UNTIL={date.today().strftime('%Y%m%d')}T235959Z"
+                    schedule.rrule = schedule.rrule + f";UNTIL={today_local.strftime('%Y%m%d')}T235959Z"
                 await session.flush()
 
                 # Update the master event's rrule too

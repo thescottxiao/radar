@@ -36,6 +36,13 @@ def mock_session():
     return AsyncMock()
 
 
+def _make_family(family_id, timezone="America/New_York"):
+    family = MagicMock()
+    family.id = family_id
+    family.timezone = timezone
+    return family
+
+
 def _make_event(
     family_id,
     title="Soccer Practice",
@@ -97,6 +104,7 @@ class TestDailyDigest:
 
         mock_event_dal.get_events_in_range = AsyncMock(side_effect=[events, events])
         mock_event_dal.get_action_items_due_soon = AsyncMock(return_value=[])
+        mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
         mock_generate.return_value = "Good morning! Here's your day:\n- 11:00 AM: Soccer Practice at Westfield Park"
 
@@ -106,11 +114,13 @@ class TestDailyDigest:
         assert "Soccer Practice" in result
         mock_generate.assert_called_once()
 
+    @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.event_dal")
     async def test_returns_none_when_nothing_actionable(
-        self, mock_event_dal, mock_session, family_id
+        self, mock_event_dal, mock_families_dal, mock_session, family_id
     ):
         """Daily digest returns None when there are no events, deadlines, or transport needs."""
+        mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_event_dal.get_events_in_range = AsyncMock(return_value=[])
         mock_event_dal.get_action_items_due_soon = AsyncMock(return_value=[])
 
@@ -119,13 +129,15 @@ class TestDailyDigest:
         assert result is None
 
     @patch("src.agents.reminders.generate")
+    @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.event_dal")
     async def test_includes_deadlines(
-        self, mock_event_dal, mock_generate, mock_session, family_id
+        self, mock_event_dal, mock_families_dal, mock_generate, mock_session, family_id
     ):
         """Daily digest includes approaching action item deadlines."""
         items = [_make_action_item(family_id, "Sign field trip permission slip")]
 
+        mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_event_dal.get_events_in_range = AsyncMock(return_value=[])
         mock_event_dal.get_action_items_due_soon = AsyncMock(return_value=items)
         mock_generate.return_value = "Heads up! Due soon:\n- Sign field trip permission slip"
@@ -151,6 +163,7 @@ class TestDailyDigest:
 
         mock_event_dal.get_events_in_range = AsyncMock(side_effect=[[], [event]])
         mock_event_dal.get_action_items_due_soon = AsyncMock(return_value=[])
+        mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
         mock_generate.return_value = "Transport needed:\n- Piano Lesson: needs drop-off and pick-up"
 
@@ -161,12 +174,14 @@ class TestDailyDigest:
 
 class TestWeeklySummary:
     @patch("src.agents.reminders.generate")
+    @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.learning_dal")
     @patch("src.agents.reminders.event_dal")
     async def test_always_generates(
-        self, mock_event_dal, mock_learning_dal, mock_generate, mock_session, family_id
+        self, mock_event_dal, mock_learning_dal, mock_families_dal, mock_generate, mock_session, family_id
     ):
         """Weekly summary always generates, even with no events."""
+        mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_event_dal.get_events_in_range = AsyncMock(return_value=[])
         mock_event_dal.get_events_needing_rsvp = AsyncMock(return_value=[])
         mock_learning_dal.get_unsurfaced_learnings = AsyncMock(return_value=[])
@@ -181,10 +196,11 @@ class TestWeeklySummary:
         mock_generate.assert_called_once()
 
     @patch("src.agents.reminders.generate")
+    @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.learning_dal")
     @patch("src.agents.reminders.event_dal")
     async def test_surfaces_and_marks_learnings(
-        self, mock_event_dal, mock_learning_dal, mock_generate, mock_session, family_id
+        self, mock_event_dal, mock_learning_dal, mock_families_dal, mock_generate, mock_session, family_id
     ):
         """Weekly summary includes unsurfaced learnings and marks them as surfaced."""
         learnings = [
@@ -192,6 +208,7 @@ class TestWeeklySummary:
             _make_learning(family_id, "Jake is allergic to peanuts"),
         ]
 
+        mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_event_dal.get_events_in_range = AsyncMock(return_value=[])
         mock_event_dal.get_events_needing_rsvp = AsyncMock(return_value=[])
         mock_learning_dal.get_unsurfaced_learnings = AsyncMock(return_value=learnings)
@@ -209,10 +226,11 @@ class TestWeeklySummary:
         )
 
     @patch("src.agents.reminders.generate")
+    @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.learning_dal")
     @patch("src.agents.reminders.event_dal")
     async def test_includes_rsvp_events(
-        self, mock_event_dal, mock_learning_dal, mock_generate, mock_session, family_id
+        self, mock_event_dal, mock_learning_dal, mock_families_dal, mock_generate, mock_session, family_id
     ):
         """Weekly summary includes events needing RSVP."""
         rsvp_event = _make_event(
@@ -223,6 +241,7 @@ class TestWeeklySummary:
             rsvp_deadline=datetime.now(UTC) + timedelta(days=2),
         )
 
+        mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_event_dal.get_events_in_range = AsyncMock(return_value=[rsvp_event])
         mock_event_dal.get_events_needing_rsvp = AsyncMock(return_value=[rsvp_event])
         mock_learning_dal.get_unsurfaced_learnings = AsyncMock(return_value=[])

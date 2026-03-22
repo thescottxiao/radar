@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -49,9 +49,14 @@ async def get_events_in_range(
 
 
 async def get_upcoming_events(
-    session: AsyncSession, family_id: UUID, days: int = 7
+    session: AsyncSession, family_id: UUID, days: int = 7,
+    family_timezone: str | None = None,
 ) -> list[Event]:
-    now = datetime.now().astimezone()
+    if family_timezone:
+        from src.utils.timezone import get_family_now
+        now = get_family_now(family_timezone)
+    else:
+        now = datetime.now(UTC)
     end = now + timedelta(days=days)
     return await get_events_in_range(session, family_id, now, end)
 
@@ -189,9 +194,14 @@ async def get_pending_action_items(
 
 
 async def get_action_items_due_soon(
-    session: AsyncSession, family_id: UUID, within_hours: int = 48
+    session: AsyncSession, family_id: UUID, within_hours: int = 48,
+    family_timezone: str | None = None,
 ) -> list[ActionItem]:
-    now = datetime.now().astimezone()
+    if family_timezone:
+        from src.utils.timezone import get_family_now
+        now = get_family_now(family_timezone)
+    else:
+        now = datetime.now(UTC)
     cutoff = now + timedelta(hours=within_hours)
     result = await session.execute(
         select(ActionItem).where(

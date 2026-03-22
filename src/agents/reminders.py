@@ -34,18 +34,23 @@ async def generate_daily_digest(
     Returns None if nothing actionable (skip sending).
     Uses Sonnet to format into a friendly WhatsApp message.
     """
-    now = datetime.now(UTC)
+    # Use family timezone for "today" boundaries
+    family = await families_dal.get_family(session, family_id)
+    family_tz = family.timezone if family else "America/New_York"
+
+    from src.utils.timezone import get_family_now
+    now = get_family_now(family_tz)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
 
-    # Today's events
+    # Today's events (in family timezone)
     todays_events = await event_dal.get_events_in_range(
         session, family_id, today_start, today_end
     )
 
     # Approaching deadlines (action items due within 48h)
     upcoming_deadlines = await event_dal.get_action_items_due_soon(
-        session, family_id, within_hours=48
+        session, family_id, within_hours=48, family_timezone=family_tz
     )
 
     # Unclaimed transport — events in next 48h with no transport assigned
@@ -135,7 +140,12 @@ async def generate_weekly_summary(
 
     Always generates (never returns None).
     """
-    now = datetime.now(UTC)
+    # Use family timezone for week boundaries
+    family = await families_dal.get_family(session, family_id)
+    family_tz = family.timezone if family else "America/New_York"
+
+    from src.utils.timezone import get_family_now
+    now = get_family_now(family_tz)
     week_end = now + timedelta(days=7)
 
     # ── Confirmation lifecycle ─────────────────────────────────────────

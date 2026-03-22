@@ -67,7 +67,9 @@ async def build_family_context(
             line += f" at {ev.location}"
         event_lines.append(line)
 
-    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    from src.utils.timezone import get_family_now
+    family_tz = family.timezone if family else "America/New_York"
+    today = get_family_now(family_tz).strftime("%Y-%m-%d")
 
     # Confirmed learnings (non-preference facts that haven't graduated)
     # Use savepoints so a failed query doesn't poison the whole transaction

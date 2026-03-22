@@ -100,7 +100,7 @@ async def resolve_pending(
         raise ValueError(f"PendingAction {action_id} not found")
     action.status = status
     action.resolved_by = resolved_by
-    action.resolved_at = datetime.now().astimezone()
+    action.resolved_at = datetime.now(UTC)
     await session.flush()
     return action
 
@@ -125,7 +125,7 @@ async def update_draft(
     history_entry = {
         "instruction": edit_instruction,
         "previous_draft": action.draft_content,
-        "timestamp": datetime.now().astimezone().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     action.edit_history = (action.edit_history or []) + [history_entry]
     action.draft_content = new_draft

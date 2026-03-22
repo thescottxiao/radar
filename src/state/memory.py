@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -38,7 +38,7 @@ async def get_recent_messages(
 
 
 async def cleanup_expired(session: AsyncSession, family_id: UUID) -> int:
-    now = datetime.now().astimezone()
+    now = datetime.now(UTC)
     result = await session.execute(
         delete(ConversationMemory).where(
             ConversationMemory.family_id == family_id,
