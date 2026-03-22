@@ -112,6 +112,17 @@ async def classify_intent(
                     },
                     pending_action_id=UUID(decoded["action_id"]),
                 )
+            # modify_scope buttons for recurring event modification
+            if decoded["action_type"] == "modify_scope":
+                return IntentResult(
+                    intent=IntentType.approval_response,
+                    confidence=1.0,
+                    extracted_params={
+                        "action": "modify_scope",
+                        "scope": decoded["response"],  # "this", "future", or "series"
+                    },
+                    pending_action_id=UUID(decoded["action_id"]),
+                )
             action_map = {"yes": "approve", "no": "dismiss"}
             return IntentResult(
                 intent=IntentType.approval_response,
@@ -1082,6 +1093,137 @@ async def _handle_query_schedule(
         return f"Here's what's coming up:\n{event_list}"
 
 
+async def _apply_single_modify(
+    session: AsyncSession,
+    family_id: UUID,
+    local_ev: "Event | None",
+    gcal_id: str | None,
+    matched_event: str,
+    modifications: dict,
+) -> str:
+    """Apply modifications to a single event instance (local DB + GCal outbox).
+
+    Returns a confirmation message.
+    """
+    # Push changes to GCal
+    if gcal_id and modifications:
+        try:
+            gcal_body: dict = {}
+            if "summary" in modifications:
+                gcal_body["summary"] = modifications["summary"]
+            if "start" in modifications:
+                gcal_body["start"] = {"dateTime": modifications["start"]}
+            if "end" in modifications:
+                gcal_body["end"] = {"dateTime": modifications["end"]}
+            if "location" in modifications:
+                gcal_body["location"] = modifications["location"]
+            if "description" in modifications:
+                gcal_body["description"] = modifications["description"]
+
+            if gcal_body:
+                from src.state import outbox as outbox_dal
+                await outbox_dal.enqueue_gcal_write(
+                    session, family_id, None, GcalOutboxOperation.patch, gcal_body,
+                    idempotency_key=f"patch:{gcal_id}:{uuid4().hex[:12]}",
+                    gcal_event_id=gcal_id,
+                )
+        except Exception:
+            logger.exception("Failed to enqueue event modification to GCal")
+
+    # Update local DB event
+    if local_ev:
+        try:
+            update_kwargs: dict = {}
+            if "summary" in modifications:
+                update_kwargs["title"] = modifications["summary"]
+            if "start" in modifications:
+                from datetime import datetime as dt
+                update_kwargs["datetime_start"] = dt.fromisoformat(modifications["start"])
+            if "end" in modifications:
+                from datetime import datetime as dt
+                update_kwargs["datetime_end"] = dt.fromisoformat(modifications["end"])
+            if "location" in modifications:
+                update_kwargs["location"] = modifications["location"]
+            if "description" in modifications:
+                update_kwargs["description"] = modifications["description"]
+            if update_kwargs:
+                await events_dal.update_event(session, family_id, local_ev.id, **update_kwargs)
+                logger.info("Updated local event '%s'", local_ev.title)
+        except Exception:
+            logger.debug("Could not update local event for '%s'", matched_event)
+
+    return f"Updated *{matched_event}* ✓"
+
+
+async def _handle_modify_scope(
+    session: AsyncSession,
+    family_id: UUID,
+    pending_action: "PendingAction",
+    scope: str,
+    sender_id: UUID,
+) -> str:
+    """Handle the user's response to 'modify just this one / all future / entire series'.
+
+    Called from the button handler when the user taps a modify scope button.
+    """
+    from src.state import outbox as outbox_dal
+    from src.state import schedules as schedules_dal
+
+    ctx = pending_action.context
+    event_id = UUID(ctx["event_id"]) if ctx.get("event_id") else None
+    gcal_id = ctx.get("gcal_id")
+    schedule_id = UUID(ctx["schedule_id"]) if ctx.get("schedule_id") else None
+    matched_event = ctx.get("matched_event", "the event")
+    modifications = ctx.get("modifications", {})
+
+    local_ev = None
+    if event_id:
+        local_ev = await events_dal.get_event(session, family_id, event_id)
+
+    if scope == "this":
+        # Modify just this instance
+        result = await _apply_single_modify(
+            session, family_id, local_ev, gcal_id, matched_event, modifications
+        )
+        if schedule_id and local_ev and local_ev.datetime_start:
+            await schedules_dal.create_schedule_exception(
+                session, family_id, schedule_id,
+                original_date=local_ev.datetime_start.date(),
+                exception_type="modified",
+                reason=f"Modified by caregiver: {json.dumps(modifications)}",
+            )
+        return f"Modified this *{matched_event}* only. Future occurrences unchanged."
+
+    elif scope in ("future", "series"):
+        # Modify local events in this schedule
+        if schedule_id:
+            local_events = await events_dal.get_upcoming_events(session, family_id, days=365)
+            for ev in local_events:
+                if ev.recurring_schedule_id == schedule_id:
+                    await _apply_single_modify(
+                        session, family_id, ev, None, ev.title or matched_event, modifications
+                    )
+        # Push series-level changes to GCal master event
+        if gcal_id and modifications:
+            gcal_body: dict = {}
+            if "summary" in modifications:
+                gcal_body["summary"] = modifications["summary"]
+            if "location" in modifications:
+                gcal_body["location"] = modifications["location"]
+            if gcal_body:
+                await outbox_dal.enqueue_gcal_write(
+                    session, family_id, None, GcalOutboxOperation.patch, gcal_body,
+                    idempotency_key=f"patch:{gcal_id}:{uuid4().hex[:12]}",
+                    gcal_event_id=gcal_id,
+                )
+
+        if scope == "future":
+            return f"Modified all future *{matched_event}* events."
+        return f"Modified the entire *{matched_event}* series."
+
+    return f"Updated *{matched_event}* ✓"
+
+
 async def _handle_modify_event(
     session: AsyncSession,
     family_id: UUID,
@@ -1165,57 +1307,63 @@ Upcoming calendar events:
                 "Could you tell me what you'd like to modify?"
             )
 
-        # Push changes to GCal
-        if gcal_id and modifications:
-            try:
-                gcal_body: dict = {}
-                if "summary" in modifications:
-                    gcal_body["summary"] = modifications["summary"]
-                if "start" in modifications:
-                    gcal_body["start"] = {"dateTime": modifications["start"]}
-                if "end" in modifications:
-                    gcal_body["end"] = {"dateTime": modifications["end"]}
-                if "location" in modifications:
-                    gcal_body["location"] = modifications["location"]
-                if "description" in modifications:
-                    gcal_body["description"] = modifications["description"]
-
-                if gcal_body:
-                    from src.state import outbox as outbox_dal
-                    await outbox_dal.enqueue_gcal_write(
-                        session, family_id, None, GcalOutboxOperation.patch, gcal_body,
-                        idempotency_key=f"patch:{gcal_id}:{uuid4().hex[:12]}",
-                        gcal_event_id=gcal_id,
-                    )
-            except Exception:
-                logger.exception("Failed to enqueue event modification to GCal")
-
-        # Update local DB event
+        # Find the local event to check if it's recurring
+        local_ev = None
         try:
             local_events = await events_dal.get_upcoming_events(session, family_id, days=90)
             for ev in local_events:
                 if ev.title and matched_event.lower() in ev.title.lower():
-                    update_kwargs: dict = {}
-                    if "summary" in modifications:
-                        update_kwargs["title"] = modifications["summary"]
-                    if "start" in modifications:
-                        from datetime import datetime as dt
-                        update_kwargs["datetime_start"] = dt.fromisoformat(modifications["start"])
-                    if "end" in modifications:
-                        from datetime import datetime as dt
-                        update_kwargs["datetime_end"] = dt.fromisoformat(modifications["end"])
-                    if "location" in modifications:
-                        update_kwargs["location"] = modifications["location"]
-                    if "description" in modifications:
-                        update_kwargs["description"] = modifications["description"]
-                    if update_kwargs:
-                        await events_dal.update_event(session, family_id, ev.id, **update_kwargs)
-                        logger.info("Updated local event '%s'", ev.title)
+                    local_ev = ev
                     break
         except Exception:
-            logger.debug("Could not update local event for '%s'", matched_event)
+            logger.debug("Could not search local events for '%s'", matched_event)
 
-        return data.get("confirmation_message", f"Updated *{matched_event}* ✓")
+        # Check if this is a recurring event — ask user for scope
+        if local_ev and (local_ev.is_recurring or local_ev.recurring_schedule_id):
+            from src.actions.whatsapp import send_buttons_to_family
+            from src.utils.button_ids import encode_button_id
+
+            modify_pending = await pending_dal.create_pending_action(
+                session,
+                family_id=family_id,
+                action_type=PendingActionType.event_confirmation,
+                draft_content=f"Modify {matched_event}",
+                context={
+                    "modify_scope": "ask",
+                    "event_id": str(local_ev.id),
+                    "gcal_id": gcal_id,
+                    "matched_event": matched_event,
+                    "modifications": modifications,
+                    "schedule_id": str(local_ev.recurring_schedule_id) if local_ev.recurring_schedule_id else None,
+                },
+                initiated_by=sender_id,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+            changes_desc = ", ".join(
+                f"{k}: {v}" for k, v in modifications.items()
+            )
+            body = (
+                f"*{matched_event}* is a recurring event. "
+                f"I'd like to change: {changes_desc}.\n\n"
+                "What should I modify?"
+            )
+            buttons = [
+                {"id": encode_button_id("modify_scope", str(modify_pending.id), "this"), "title": "Just this one"},
+                {"id": encode_button_id("modify_scope", str(modify_pending.id), "future"), "title": "All future"},
+                {"id": encode_button_id("modify_scope", str(modify_pending.id), "series"), "title": "Entire series"},
+            ]
+            try:
+                await send_buttons_to_family(session, family_id, body, buttons)
+            except Exception:
+                logger.debug("Could not send modify scope buttons, falling back to single modify")
+
+            return body
+
+        # Non-recurring event: apply directly
+        return await _apply_single_modify(
+            session, family_id, local_ev, gcal_id, matched_event, modifications
+        )
 
     except json.JSONDecodeError:
         logger.warning("Could not parse modify LLM response: %s", raw[:200] if raw else "empty")
@@ -1768,6 +1916,24 @@ async def _handle_approval_response(
             return "I'm not sure what you're referring to. Could you clarify?"
 
         result = await _handle_cancel_scope(
+            session, family_id, pending_action, scope, sender_id
+        )
+        await pending_dal.resolve_pending(
+            session, family_id, pending_action_id,
+            status=PendingActionStatus.approved, resolved_by=sender_id,
+        )
+        return result
+
+    if action_type == "modify_scope":
+        # Caregiver answered "Just this one / All future / Entire series" for modify
+        scope = intent.extracted_params.get("scope", "this")
+        pending_action = await pending_dal.get_pending_action(
+            session, family_id, pending_action_id
+        )
+        if not pending_action or pending_action.context.get("modify_scope") != "ask":
+            return "I'm not sure what you're referring to. Could you clarify?"
+
+        result = await _handle_modify_scope(
             session, family_id, pending_action, scope, sender_id
         )
         await pending_dal.resolve_pending(

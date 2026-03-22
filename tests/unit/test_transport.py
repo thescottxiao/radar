@@ -17,7 +17,7 @@ from src.agents.calendar import (
     populate_transport_defaults,
     track_transport_claim,
 )
-from src.agents.schemas import Conflict
+from src.agents.schemas import Conflict, ExtractedAssignment, ExtractedBulkAssignment, ExtractedBulkRelease
 from src.state.models import (
     Caregiver,
     Child,
@@ -732,12 +732,16 @@ class TestHandleAssignmentClaimBroadcast:
         cg1 = _make_caregiver(family_id, "Mom")
         cg2 = _make_caregiver(family_id, "Dad")
         ec = _make_event_child(uuid4(), child.id, family_id)
+
         event = _make_event(family_id, children=[ec])
 
-        mock_extracted = MagicMock()
-        mock_extracted.child_name = "Emma"
-        mock_extracted.event_hint = None
-        mock_extracted.role = "drop_off"
+        mock_extracted = ExtractedBulkAssignment(
+            scope="single",
+            role="drop_off",
+            assignments=[
+                ExtractedAssignment(child_name="Emma", event_hint=None, role="drop_off"),
+            ],
+        )
 
         session = AsyncMock()
 
@@ -752,6 +756,8 @@ class TestHandleAssignmentClaimBroadcast:
                   return_value=mock_extracted),
             patch("src.agents.calendar.children_dal.fuzzy_match_child",
                   new_callable=AsyncMock, return_value=child),
+            patch("src.agents.calendar.children_dal.get_children_for_family",
+                  new_callable=AsyncMock, return_value=[child]),
             patch("src.agents.calendar.events_dal.update_event",
                   new_callable=AsyncMock),
             patch("src.agents.calendar.check_all_transport_conflicts",
@@ -780,12 +786,16 @@ class TestHandleAssignmentClaimBroadcast:
         cg1 = _make_caregiver(family_id, "Mom")
         cg2 = _make_caregiver(family_id, "Dad")
         ec = _make_event_child(uuid4(), child.id, family_id)
+
         event = _make_event(family_id, children=[ec])
 
-        mock_extracted = MagicMock()
-        mock_extracted.child_name = "Emma"
-        mock_extracted.event_hint = None
-        mock_extracted.role = "drop_off"
+        mock_extracted = ExtractedBulkAssignment(
+            scope="single",
+            role="drop_off",
+            assignments=[
+                ExtractedAssignment(child_name="Emma", event_hint=None, role="drop_off"),
+            ],
+        )
 
         conflict = Conflict(
             existing_event_id=uuid4(),
@@ -808,6 +818,8 @@ class TestHandleAssignmentClaimBroadcast:
                   return_value=mock_extracted),
             patch("src.agents.calendar.children_dal.fuzzy_match_child",
                   new_callable=AsyncMock, return_value=child),
+            patch("src.agents.calendar.children_dal.get_children_for_family",
+                  new_callable=AsyncMock, return_value=[child]),
             patch("src.agents.calendar.events_dal.update_event",
                   new_callable=AsyncMock),
             patch("src.agents.calendar.check_all_transport_conflicts",
@@ -823,6 +835,175 @@ class TestHandleAssignmentClaimBroadcast:
 
         assert "⚠️ Heads up:" in response
         assert "⚠️ Heads up:" in notifications[0]
+
+    @pytest.mark.asyncio
+    async def test_bulk_all_assigns_all_events(self):
+        """scope='all' assigns transport for all events needing it."""
+        from src.agents.calendar import handle_assignment_claim
+
+        family_id = uuid4()
+        child = _make_child(family_id, "Emma")
+        cg1 = _make_caregiver(family_id, "Mom")
+        cg2 = _make_caregiver(family_id, "Dad")
+        ec1 = _make_event_child(uuid4(), child.id, family_id)
+        ec2 = _make_event_child(uuid4(), child.id, family_id)
+        ec3 = _make_event_child(uuid4(), child.id, family_id)
+
+        event1 = _make_event(family_id, title="Soccer", hours_from_now=24, children=[ec1])
+        event2 = _make_event(family_id, title="Piano", hours_from_now=48, children=[ec2])
+        event3 = _make_event(family_id, title="Swim", hours_from_now=72, children=[ec3])
+
+        mock_extracted = ExtractedBulkAssignment(
+            scope="all",
+            role="both",
+            assignments=[],
+        )
+
+        session = AsyncMock()
+
+        with (
+            patch("src.agents.calendar._build_family_context", new_callable=AsyncMock,
+                  return_value={
+                      "upcoming": [event1, event2, event3],
+                      "children_names": ["Emma"],
+                      "caregivers": [cg1, cg2],
+                  }),
+            patch("src.agents.calendar.extract", new_callable=AsyncMock,
+                  return_value=mock_extracted),
+            patch("src.agents.calendar.children_dal.get_children_for_family",
+                  new_callable=AsyncMock, return_value=[child]),
+            patch("src.agents.calendar.events_dal.update_event",
+                  new_callable=AsyncMock),
+            patch("src.agents.calendar.check_all_transport_conflicts",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("src.agents.calendar.track_transport_claim",
+                  new_callable=AsyncMock),
+            patch("src.agents.calendar.memory_dal.get_recent_messages",
+                  new_callable=AsyncMock, return_value=[]),
+        ):
+            response, notifications = await handle_assignment_claim(
+                session, family_id, "I'll do transport for all of them", cg1.id
+            )
+
+        assert "3 events" in response
+        assert "Soccer" in response
+        assert "Piano" in response
+        assert "Swim" in response
+        assert len(notifications) == 1
+        assert "3 events" in notifications[0]
+
+    @pytest.mark.asyncio
+    async def test_bulk_specific_assigns_subset(self):
+        """scope='specific' assigns only the named events."""
+        from src.agents.calendar import handle_assignment_claim
+
+        family_id = uuid4()
+        child = _make_child(family_id, "Emma")
+        cg1 = _make_caregiver(family_id, "Mom")
+        cg2 = _make_caregiver(family_id, "Dad")
+        ec1 = _make_event_child(uuid4(), child.id, family_id)
+        ec2 = _make_event_child(uuid4(), child.id, family_id)
+        ec3 = _make_event_child(uuid4(), child.id, family_id)
+
+        event1 = _make_event(family_id, title="Soccer", hours_from_now=24, children=[ec1])
+        event2 = _make_event(family_id, title="Piano", hours_from_now=48, children=[ec2])
+        event3 = _make_event(family_id, title="Swim", hours_from_now=72, children=[ec3])
+
+        mock_extracted = ExtractedBulkAssignment(
+            scope="specific",
+            role="both",
+            assignments=[
+                ExtractedAssignment(child_name="Emma", event_hint="Soccer"),
+                ExtractedAssignment(child_name="Emma", event_hint="Swim"),
+            ],
+        )
+
+        session = AsyncMock()
+
+        async def mock_find_target(session, family_id, hint, candidates):
+            for c in candidates:
+                if hint.lower() in c.title.lower():
+                    return c
+            return None
+
+        with (
+            patch("src.agents.calendar._build_family_context", new_callable=AsyncMock,
+                  return_value={
+                      "upcoming": [event1, event2, event3],
+                      "children_names": ["Emma"],
+                      "caregivers": [cg1, cg2],
+                  }),
+            patch("src.agents.calendar.extract", new_callable=AsyncMock,
+                  return_value=mock_extracted),
+            patch("src.agents.calendar.children_dal.fuzzy_match_child",
+                  new_callable=AsyncMock, return_value=child),
+            patch("src.agents.calendar.children_dal.get_children_for_family",
+                  new_callable=AsyncMock, return_value=[child]),
+            patch("src.agents.calendar._find_target_event",
+                  new_callable=AsyncMock, side_effect=mock_find_target),
+            patch("src.agents.calendar.events_dal.update_event",
+                  new_callable=AsyncMock),
+            patch("src.agents.calendar.check_all_transport_conflicts",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("src.agents.calendar.track_transport_claim",
+                  new_callable=AsyncMock),
+            patch("src.agents.calendar.memory_dal.get_recent_messages",
+                  new_callable=AsyncMock, return_value=[]),
+        ):
+            response, notifications = await handle_assignment_claim(
+                session, family_id, "I'll handle soccer and swim", cg1.id
+            )
+
+        assert "2 events" in response
+        assert "Soccer" in response
+        assert "Swim" in response
+        assert "Piano" not in response
+
+
+class TestHandleTransportReleaseBulk:
+    @pytest.mark.asyncio
+    async def test_bulk_all_releases_all_assigned(self):
+        """scope='all' releases transport for all events the sender is assigned to."""
+        from src.agents.calendar import handle_transport_release
+
+        family_id = uuid4()
+        cg1 = _make_caregiver(family_id, "Mom")
+        cg2 = _make_caregiver(family_id, "Dad")
+
+        event1 = _make_event(family_id, title="Soccer", hours_from_now=24,
+                             drop_off_by=cg1.id, pick_up_by=cg1.id)
+        event2 = _make_event(family_id, title="Piano", hours_from_now=48,
+                             drop_off_by=cg1.id, pick_up_by=cg1.id)
+
+        mock_extracted = ExtractedBulkRelease(
+            scope="all",
+            role="both",
+            releases=[],
+        )
+
+        session = AsyncMock()
+
+        with (
+            patch("src.agents.calendar._build_family_context", new_callable=AsyncMock,
+                  return_value={
+                      "upcoming": [event1, event2],
+                      "children_names": ["Emma"],
+                      "caregivers": [cg1, cg2],
+                  }),
+            patch("src.agents.calendar.extract", new_callable=AsyncMock,
+                  return_value=mock_extracted),
+            patch("src.agents.calendar.events_dal.update_event",
+                  new_callable=AsyncMock),
+        ):
+            response, notifications = await handle_transport_release(
+                session, family_id, "I can't do any of them this week", cg1.id
+            )
+
+        assert "2 events" in response
+        assert "Soccer" in response
+        assert "Piano" in response
+        assert len(notifications) == 1
+        assert "2 events" in notifications[0]
 
 
 # ── GCal transport description tests ──────────────────────────────────
