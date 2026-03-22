@@ -97,10 +97,15 @@ async def delete_recurring_schedule(
 
 
 async def get_active_schedules_for_family(
-    session: AsyncSession, family_id: UUID
+    session: AsyncSession, family_id: UUID,
+    family_timezone: str | None = None,
 ) -> list[RecurringSchedule]:
     """Get schedules that are currently active (end_date is NULL or >= today)."""
-    today = date.today()
+    if family_timezone:
+        from src.utils.timezone import get_family_today
+        today = get_family_today(family_timezone)
+    else:
+        today = date.today()
     result = await session.execute(
         select(RecurringSchedule)
         .where(
