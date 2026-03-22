@@ -747,15 +747,6 @@ async def handle_assignment_claim(
         response = f"✓ {assignee_name or 'You'} — transport assigned for {len(confirm_lines)} events:\n"
         response += "\n".join(confirm_lines)
 
-    # Show remaining unassigned across events
-    still_need = [
-        ev for ev in events_needing_transport
-        if ev.id not in assigned_event_ids
-        and (not ev.drop_off_by or not ev.pick_up_by)
-    ]
-    if still_need:
-        response += f"\n\n{len(still_need)} event(s) still need transport."
-
     # Conflict warnings
     if all_conflicts:
         response += "\n\n⚠️ Heads up:"
