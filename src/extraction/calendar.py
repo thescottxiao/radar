@@ -8,7 +8,7 @@ Handles:
 """
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -156,11 +156,12 @@ async def _handle_cancellation(
         )
         session.add(exception)
 
-    # Soft-delete by marking as cancelled (update description)
+    # Soft-delete by setting cancelled_at
     await events_dal.update_event(
         session,
         family_id,
         event.id,
+        cancelled_at=datetime.now(UTC),
         description=(event.description or "") + "\n[CANCELLED]",
     )
 
