@@ -146,11 +146,32 @@ class ExtractedAssignment(BaseModel):
     child_name: str = Field(description="Name of child being claimed for transport")
     event_hint: str | None = Field(
         default=None,
-        description="Which event this assignment is for, if mentioned",
+        description=(
+            "Which event this assignment is for. Extract from the user's message "
+            "OR from recent conversation context. If the recent conversation was about "
+            "a specific event (e.g., 'soccer practice'), set this to that event name "
+            "even if the current message just says 'handle it'."
+        ),
+    )
+    date_hint: str | None = Field(
+        default=None,
+        description=(
+            "Day or date reference for the event, if mentioned in the message or "
+            "recent conversation. Examples: 'Monday', 'Wednesday', 'Wed', 'March 25', "
+            "'this weekend'. Used to disambiguate when multiple events share a title."
+        ),
     )
     role: str = Field(
         default="both",
         description="One of: drop_off, pick_up, both",
+    )
+    assigned_caregiver: str | None = Field(
+        default=None,
+        description=(
+            "Name of the caregiver being assigned. If the sender says "
+            "'I'll handle it' this is null (meaning the sender). If they say "
+            "'Nick has dropoff' or 'Dad is doing pickup', this is 'Nick' or 'Dad'."
+        ),
     )
 
 

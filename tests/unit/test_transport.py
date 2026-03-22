@@ -758,6 +758,8 @@ class TestHandleAssignmentClaimBroadcast:
                   new_callable=AsyncMock, return_value=[]),
             patch("src.agents.calendar.track_transport_claim",
                   new_callable=AsyncMock),
+            patch("src.agents.calendar.memory_dal.get_recent_messages",
+                  new_callable=AsyncMock, return_value=[]),
         ):
             response, notifications = await handle_assignment_claim(
                 session, family_id, "I'll drop Emma off at soccer", cg1.id
@@ -812,6 +814,8 @@ class TestHandleAssignmentClaimBroadcast:
                   new_callable=AsyncMock, return_value=[conflict]),
             patch("src.agents.calendar.track_transport_claim",
                   new_callable=AsyncMock),
+            patch("src.agents.calendar.memory_dal.get_recent_messages",
+                  new_callable=AsyncMock, return_value=[]),
         ):
             response, notifications = await handle_assignment_claim(
                 session, family_id, "I'll drop Emma off at soccer", cg1.id

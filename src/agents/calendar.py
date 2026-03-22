@@ -72,12 +72,23 @@ Recently mentioned events:
 """
 
 ASSIGNMENT_EXTRACTION_SYSTEM = """\
-You are extracting a transport assignment claim from a parent's message.
-The parent is volunteering to handle drop-off/pick-up for a child.
+You are extracting a transport assignment from a parent's message.
+The parent may be volunteering themselves OR assigning another caregiver.
 
 Family children: {children_names}
+Family caregivers: {caregiver_names}
 Upcoming events needing transport:
 {upcoming_events}
+{recent_context}
+IMPORTANT:
+- If the recent conversation discusses a specific event (e.g., user asked about "Wed morning
+  soccer" and the bot replied about "Soccer practice on Wednesday"), you MUST set event_hint
+  to that event name (e.g., "soccer practice"). Do this even if the current message just says
+  "handle it" or "Nick will do it" without naming the event.
+- If the message names a caregiver (e.g., "Nick has dropoff", "Dad is doing pickup"),
+  set assigned_caregiver to that name. If the sender says "I'll handle it" or doesn't
+  name anyone, leave assigned_caregiver null.
+- A name that matches a caregiver (not a child) should be treated as caregiver assignment.
 """
 
 RELEASE_EXTRACTION_SYSTEM = """\
@@ -454,9 +465,19 @@ async def handle_assignment_claim(
 
     upcoming_text = _format_events_for_prompt(events_needing_transport)
 
+    # Include recent conversation so the LLM knows which event was just discussed
+    recent_memories = await memory_dal.get_recent_messages(session, family_id, limit=5)
+    memory_lines = [m.content for m in recent_memories]
+    recent_context = ""
+    if memory_lines:
+        recent_context = "Recent conversation:\n" + "\n".join(memory_lines)
+
+    caregiver_names = [c.name or c.whatsapp_phone for c in ctx["caregivers"]]
     system = ASSIGNMENT_EXTRACTION_SYSTEM.format(
         children_names=", ".join(ctx["children_names"]) if ctx["children_names"] else "none",
+        caregiver_names=", ".join(caregiver_names) if caregiver_names else "none",
         upcoming_events=upcoming_text,
+        recent_context=recent_context,
     )
 
     extracted = await extract(
@@ -476,6 +497,13 @@ async def handle_assignment_claim(
             [],
         )
 
+    # Refresh children relationships that may have expired after LLM + DB calls
+    for ev in ctx["upcoming"]:
+        try:
+            await session.refresh(ev, ["children"])
+        except Exception:
+            pass  # stale event — skip it in filtering below
+
     # Filter to events linked to this child
     child_events = [
         ev for ev in events_needing_transport
@@ -484,14 +512,30 @@ async def handle_assignment_claim(
 
     # Find the target event (if hinted) or the next event for that child
     target_event = None
+    candidates = child_events or events_needing_transport
+
+    # If there's a date hint, filter candidates to matching dates first
+    if extracted.date_hint and isinstance(extracted.date_hint, str):
+        date_filtered = _filter_events_by_date_hint(candidates, extracted.date_hint)
+        if date_filtered:
+            candidates = date_filtered
+        else:
+            # Date didn't match any events needing transport — the event may
+            # already have transport assigned (reassignment case). Search ALL
+            # upcoming events so we can still match and reassign.
+            all_upcoming = ctx["upcoming"]
+            all_date_filtered = _filter_events_by_date_hint(all_upcoming, extracted.date_hint)
+            if all_date_filtered:
+                candidates = all_date_filtered
+
     if extracted.event_hint:
         target_event = await _find_target_event(
             session, family_id, extracted.event_hint,
-            child_events or events_needing_transport,
+            candidates,
         )
 
-    if not target_event and child_events:
-        target_event = child_events[0]
+    if not target_event and candidates:
+        target_event = candidates[0]
 
     if not target_event:
         # Fall back to any event needing transport
@@ -501,14 +545,24 @@ async def handle_assignment_claim(
     if not target_event:
         return ("I couldn't find an upcoming event that needs transport assignment.", [])
 
+    # Resolve which caregiver is being assigned
+    assignee_id = sender_id  # default: sender volunteers themselves
+    if extracted.assigned_caregiver:
+        # Look up the named caregiver
+        named = extracted.assigned_caregiver.lower().strip()
+        for cg in ctx["caregivers"]:
+            if cg.name and cg.name.lower() == named:
+                assignee_id = cg.id
+                break
+
     # Apply assignment
     update_kwargs = {}
-    sender_name = _caregiver_display_name(ctx["caregivers"], sender_id)
+    assignee_name = _caregiver_display_name(ctx["caregivers"], assignee_id)
 
     if extracted.role in ("drop_off", "both"):
-        update_kwargs["drop_off_by"] = sender_id
+        update_kwargs["drop_off_by"] = assignee_id
     if extracted.role in ("pick_up", "both"):
-        update_kwargs["pick_up_by"] = sender_id
+        update_kwargs["pick_up_by"] = assignee_id
 
     if update_kwargs:
         await events_dal.update_event(
@@ -522,7 +576,7 @@ async def handle_assignment_claim(
 
     time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
     response = (
-        f"✓ {sender_name or 'You'} — {role_text} "
+        f"✓ {assignee_name or 'You'} — {role_text} "
         f"for {child.name} at \"{target_event.title}\" on {time_str}."
     )
 
@@ -539,7 +593,7 @@ async def handle_assignment_claim(
 
     # Build notification for other caregivers
     notification = (
-        f"{sender_name or 'A caregiver'} is handling {role_text} "
+        f"{assignee_name or 'A caregiver'} is handling {role_text} "
         f"for {child.name} at \"{target_event.title}\" on {time_str}."
     )
     if remaining_text:
@@ -547,7 +601,7 @@ async def handle_assignment_claim(
 
     # Sibling conflict check
     all_conflicts = await check_all_transport_conflicts(
-        session, family_id, target_event, caregiver_filter=sender_id
+        session, family_id, target_event, caregiver_filter=assignee_id
     )
 
     conflict_text = ""
@@ -570,6 +624,17 @@ async def handle_assignment_claim(
                 )
     except Exception:
         logger.debug("Could not track transport claim for routine inference", exc_info=True)
+
+    # Check off transport prep item if both drop-off and pick-up are now assigned
+    if target_event.drop_off_by and target_event.pick_up_by and target_event.description:
+        updated_desc = target_event.description.replace(
+            "☐ Arrange drop-off/pick-up", "☑ Arrange drop-off/pick-up"
+        )
+        if updated_desc != target_event.description:
+            target_event.description = updated_desc
+            await events_dal.update_event(
+                session, family_id, target_event.id, description=updated_desc
+            )
 
     # Enqueue GCal update via outbox (includes transport section in description)
     try:
@@ -1317,6 +1382,47 @@ def _format_events_for_prompt(events: list[Event]) -> str:
             line += f" at {ev.location}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def _filter_events_by_date_hint(
+    events: list["Event"], date_hint: str
+) -> list["Event"]:
+    """Filter events whose date matches a natural-language date hint.
+
+    Handles day names (Mon, Monday, Wed, Wednesday), date strings (March 25),
+    and relative references (today, tomorrow, this weekend).
+    """
+    import re
+
+    hint_lower = date_hint.lower().strip()
+
+    # Map day name abbreviations to full names and weekday numbers (Mon=0)
+    _DAY_MAP = {
+        "mon": 0, "monday": 0,
+        "tue": 1, "tues": 1, "tuesday": 1,
+        "wed": 2, "wednesday": 2,
+        "thu": 3, "thur": 3, "thurs": 3, "thursday": 3,
+        "fri": 4, "friday": 4,
+        "sat": 5, "saturday": 5,
+        "sun": 6, "sunday": 6,
+    }
+
+    # Try matching by day of week
+    for name, weekday_num in _DAY_MAP.items():
+        if name in hint_lower:
+            matches = [ev for ev in events if ev.datetime_start.weekday() == weekday_num]
+            if matches:
+                return matches
+
+    # Try matching by month + day number (e.g., "March 25")
+    month_day = re.search(r"(march|april|may|june|july|aug|sept?|oct|nov|dec)\w*\s+(\d{1,2})", hint_lower)
+    if month_day:
+        day_num = int(month_day.group(2))
+        matches = [ev for ev in events if ev.datetime_start.day == day_num]
+        if matches:
+            return matches
+
+    return []
 
 
 async def _find_target_event(
