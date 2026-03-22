@@ -1085,12 +1085,28 @@ async def _handle_query_schedule(
     )
     from zoneinfo import ZoneInfo
     tz = ZoneInfo(family_tz)
+
+    # Build caregiver map for transport status display
+    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+    caregiver_map = {c.id: c.name or c.whatsapp_phone for c in caregivers}
+
     for ev in events:
         local_start = ev.datetime_start.astimezone(tz) if ev.datetime_start else None
         dt_str = local_start.strftime("%a %b %d, %I:%M %p") if local_start else "TBD"
         line = f"- {ev.title} — {dt_str}"
         if ev.location:
             line += f" @ {ev.location}"
+        # Include transport status if event has children linked
+        if ev.children:
+            transport_parts = []
+            if ev.drop_off_by:
+                transport_parts.append(f"drop-off: {caregiver_map.get(ev.drop_off_by, 'someone')}")
+            if ev.pick_up_by:
+                transport_parts.append(f"pick-up: {caregiver_map.get(ev.pick_up_by, 'someone')}")
+            if transport_parts:
+                line += f" (🚗 {', '.join(transport_parts)})"
+            else:
+                line += " (🚗 transport not assigned)"
         event_lines.append(line)
 
     # Fallback to GCal if local DB has no events
