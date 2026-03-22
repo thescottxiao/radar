@@ -289,7 +289,9 @@ class TestRouteIntent:
         mock_family = MagicMock()
         mock_family.timezone = "America/New_York"
         with patch("src.extraction.router.events_dal.get_upcoming_events", return_value=[]), \
-             patch("src.state.families.get_family", new_callable=AsyncMock, return_value=mock_family):
+             patch("src.state.families.get_family", new_callable=AsyncMock, return_value=mock_family), \
+             patch("src.state.families.get_caregivers_for_family",
+                   new_callable=AsyncMock, return_value=[]):
             response = await route_intent(
                 session, family_id, intent, "What's on this week?", sender_id
             )
