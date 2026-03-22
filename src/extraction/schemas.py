@@ -62,6 +62,32 @@ class ExtractedEvent(BaseModel):
         "False if time was inferred from vague terms like 'morning', 'evening', 'afternoon', or not mentioned.",
     )
 
+    # Recurrence fields
+    is_recurring: bool = Field(
+        default=False,
+        description="True if the event is explicitly recurring (e.g., 'every Monday', 'weekly', 'biweekly').",
+    )
+    recurrence_pattern: str | None = Field(
+        default=None,
+        description="Human-readable recurrence pattern (e.g., 'every Monday and Wednesday').",
+    )
+    recurrence_freq: str | None = Field(
+        default=None,
+        description="Recurrence frequency: WEEKLY, MONTHLY, or DAILY.",
+    )
+    recurrence_days: list[str] = Field(
+        default_factory=list,
+        description="Days of the week for recurrence using 2-letter codes: MO, TU, WE, TH, FR, SA, SU.",
+    )
+    recurrence_until: datetime | None = Field(
+        default=None,
+        description="End date for recurrence. None = indefinite.",
+    )
+    recurrence_interval: int = Field(
+        default=1,
+        description="Interval for recurrence. 2 = biweekly for WEEKLY freq.",
+    )
+
 
 class ExtractedActionItem(BaseModel):
     """Structured action item extracted from text."""

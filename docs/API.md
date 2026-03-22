@@ -298,6 +298,32 @@ Triggered as part of the daily digest evaluation.
 2. Generate suggestions for detected gaps.
 3. Include in daily digest or send as immediate trigger if urgent.
 
+### POST `/internal/reconcile`
+
+Trigger GCal reconciliation for all families with connected Google accounts.
+
+**Behavior:**
+1. For each family with Google tokens, compare local DB events (next 30 days) against GCal.
+2. Import new GCal events, soft-delete locally if removed from GCal, push local corrections to GCal via outbox.
+3. Conflict resolution: `source=calendar` events → GCal wins; all other sources → local DB wins.
+
+**Response:**
+```json
+{
+  "status": "complete",
+  "families": 5,
+  "created": 2,
+  "updated": 1,
+  "cancelled": 0,
+  "pushed": 3,
+  "skipped": 0
+}
+```
+
+### POST `/internal/reconcile/{family_id}`
+
+Trigger GCal reconciliation for a single family. Same behavior as above, scoped to one family.
+
 ---
 
 ## Health & Monitoring

@@ -25,6 +25,7 @@ from src.llm import extract, generate
 from src.state import children as children_dal
 from src.state import events as events_dal
 from src.state import families as families_dal
+from src.state.models import GcalOutboxOperation
 from src.state import learning as learning_dal
 from src.state import memory as memory_dal
 from src.state import schedules as schedules_dal
@@ -316,17 +317,17 @@ async def handle_update(
         session, family_id, target.id, **update_kwargs
     )
 
-    # Update GCal (best-effort)
+    # Enqueue GCal update via outbox (async, with retry)
     try:
-        from src.actions.gcal import update_calendar_event
+        from uuid import uuid4
+        from src.state import outbox as outbox_dal
 
-        caregivers = ctx["caregivers"]
-        for caregiver in caregivers:
-            if caregiver.google_refresh_token_encrypted:
-                await update_calendar_event(session, family_id, updated)
-                break
-    except (ImportError, Exception) as exc:
-        logger.warning("Could not update GCal event: %s", exc)
+        await outbox_dal.enqueue_gcal_write(
+            session, family_id, updated.id, GcalOutboxOperation.update, {},
+            idempotency_key=f"update:{updated.id}:{uuid4().hex[:12]}",
+        )
+    except Exception as exc:
+        logger.warning("Could not enqueue GCal update: %s", exc)
 
     # Build response
     changes = []
@@ -570,13 +571,17 @@ async def handle_assignment_claim(
     except Exception:
         logger.debug("Could not track transport claim for routine inference", exc_info=True)
 
-    # Best-effort GCal sync (includes transport section in description)
+    # Enqueue GCal update via outbox (includes transport section in description)
     try:
-        from src.actions.gcal import update_calendar_event
+        from uuid import uuid4
+        from src.state import outbox as outbox_dal
 
-        await update_calendar_event(session, family_id, target_event)
-    except (ImportError, Exception) as exc:
-        logger.debug("Could not sync transport assignment to GCal: %s", exc)
+        await outbox_dal.enqueue_gcal_write(
+            session, family_id, target_event.id, GcalOutboxOperation.update, {},
+            idempotency_key=f"update:{target_event.id}:{uuid4().hex[:12]}",
+        )
+    except Exception as exc:
+        logger.debug("Could not enqueue transport GCal sync: %s", exc)
 
     return response, notifications
 

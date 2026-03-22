@@ -391,7 +391,7 @@ FamilyLearning {
 - `location_change`: Location updated → update Event in local DB
 - `attendee_change`: New attendees added → check if new child involved
 
-**No WhatsApp notifications for GCal changes:** GCal is the source of truth. Changes made directly in GCal (adds, updates, deletions) are synced to the local Event Registry but do NOT generate WhatsApp notifications — the user already knows about changes they made in their own calendar. WhatsApp notifications for events come only from email ingestion (via the Email Extraction Agent → pending action approval flow).
+**No WhatsApp notifications for GCal changes:** Changes made directly in GCal (adds, updates, deletions) are imported into the authoritative local Event Registry but do NOT generate WhatsApp notifications — the user already knows about changes they made in their own calendar. WhatsApp notifications for events come only from email ingestion (via the Email Extraction Agent → pending action approval flow).
 
 **Recurring schedule awareness:** If a recurring event instance is modified or cancelled, update only that instance in the RecurringSchedule exceptions list. Do not modify the overall schedule pattern.
 
@@ -438,7 +438,7 @@ FamilyLearning {
 - **modify_event:** Applies the requested changes (time, location, title, etc.) to both GCal and local DB.
 - **event_update:** Updates event metadata (e.g., mark a prep checklist item as done: ☐ → ☑) in both GCal and local DB.
 
-**Schedule queries use GCal as source of truth:** When a user asks "what's on my schedule," the system queries Google Calendar directly (not the local Event Registry) to ensure manually-added events and external changes are included. Falls back to local DB if GCal is unavailable.
+**Schedule queries use local DB as authoritative source:** When a user asks "what's on my schedule," the system queries the local Event Registry first. GCal changes are continuously imported via webhooks and periodic reconciliation. Falls back to GCal API if local DB has no events for the family.
 
 **Voice note handling:** Audio messages from WhatsApp are first sent to Whisper API for transcription, then the transcript is processed through the same intent classification pipeline as text messages.
 
@@ -448,7 +448,7 @@ FamilyLearning {
 
 **Capabilities:**
 
-- **Event creation:** When a new event is confirmed (via button tap or text reply), create the event in the local Event Registry AND write to Google Calendar on all connected caregivers' calendars. GCal is the source of truth. After confirmation, concise prep tips are sent to the caregiver based on the event description. AUTO.
+- **Event creation:** When a new event is confirmed (via button tap or text reply), create the event in the local Event Registry (authoritative) and enqueue a GCal write via the outbox. The outbox processor syncs to Google Calendar asynchronously with retry. After confirmation, concise prep tips are sent to the caregiver based on the event description. AUTO.
 - **Conflict detection:** Before adding any event, check all caregivers' calendars for overlapping time blocks. Surface conflicts to the group.
 - **Cross-child conflicts:** If two children have overlapping events at different locations, surface with transport implications: "Jake has soccer at 3pm and Emma has piano at 3:30pm — different locations. Who's taking whom?"
 - **Playdate scheduling:** Manages the flow: check family availability → suggest times → draft message to other parent (SUGGEST mode) → track response.
@@ -1227,7 +1227,7 @@ All major decisions made during the design process:
 | Voice note transcription | Deferred to Phase 4 | WhatsApp Business API doesn't provide transcripts; not critical for email ingestion validation in Phase 2 |
 | Third-party integrations | Deferred to Phase 4 | RSVPs, forms, registrations, payments — high complexity, each service is different. Phases 1–3 remind users of deadlines/actions; users act manually on external services. |
 | Reinforcement learning | Prompt enrichment now, aggregate preference learning at scale, fine-tuning at 12–18 months | Per-family RL has cold-start problem; rich context in prompts achieves 80% of personalization value |
-| GCal as source of truth | Schedule queries read from GCal API, not local DB | GCal includes manually-added events and external changes; local DB may be stale. Local DB is fallback only. |
+| Local DB as authoritative | Schedule queries read from local DB; GCal synced via webhooks + periodic reconciliation | Local DB stores rich metadata (transport, RSVP, child links) that GCal can't. GCal is a sync target, not the source of truth. Reconciler runs hourly to catch missed webhooks. |
 | Email triage scope | All family member events, not just kids' activities | Adult events (dinner, concerts, travel) are equally important for family coordination |
 | Timezone inference | Infer from event location, family timezone as fallback | Avoids incorrect UTC assumptions for cross-timezone events (e.g., Tempe AZ event at 7AM MST should not become 4AM ET) |
 | Event update via conversation | Two-tier context: conversation history → GCal search | Enables natural follow-ups like "I already bought the gift" after confirming an event |

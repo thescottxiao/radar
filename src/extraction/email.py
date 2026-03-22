@@ -47,6 +47,14 @@ class ExtractedEvent(BaseModel):
         default=0.5, ge=0.0, le=1.0, description="Extraction confidence score"
     )
 
+    # Recurrence fields
+    is_recurring: bool = False
+    recurrence_pattern: str | None = None
+    recurrence_freq: str | None = None
+    recurrence_days: list[str] = Field(default_factory=list)
+    recurrence_until: datetime | None = None
+    recurrence_interval: int = 1
+
 
 class ExtractedActionItem(BaseModel):
     """An action item extracted from an email."""
@@ -205,6 +213,16 @@ Extract the following from the email:
 
    Uniform: white pants, home jersey
    Player: [child name]"
+
+   RECURRING EVENTS: If an email describes a recurring event (e.g., "practice every Tuesday
+   and Thursday", "weekly swim class", "piano lessons Mondays through June"), set:
+   - is_recurring: true
+   - recurrence_pattern: human-readable (e.g., "every Tuesday and Thursday")
+   - recurrence_freq: WEEKLY, MONTHLY, or DAILY
+   - recurrence_days: list of 2-letter day codes [MO, TU, WE, TH, FR, SA, SU]
+   - recurrence_interval: 1 for weekly, 2 for biweekly, etc.
+   - recurrence_until: ISO 8601 end date if a season/end date is mentioned (null = indefinite)
+   - datetime_start should be the FIRST occurrence
 
 2. Action items: forms to sign, payments due, items to bring/purchase, RSVPs needed
 3. Learnings: facts and preferences about the family.

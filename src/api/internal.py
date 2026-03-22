@@ -163,6 +163,34 @@ async def renew_watches(
     }
 
 
+# ── GCal reconciliation ────────────────────────────────────────────────
+
+
+@router.post("/reconcile")
+async def trigger_reconcile():
+    """Trigger GCal reconciliation for all families with Google tokens."""
+    from src.actions.gcal_reconciler import reconcile_all_families
+
+    stats = await reconcile_all_families()
+    return {"status": "complete", **stats}
+
+
+@router.post("/reconcile/{family_id}")
+async def trigger_reconcile_family(
+    family_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Trigger GCal reconciliation for a single family."""
+    from uuid import UUID
+
+    from src.actions.gcal_reconciler import reconcile_family
+
+    fid = UUID(family_id)
+    stats = await reconcile_family(session, fid)
+    await session.commit()
+    return {"status": "complete", "family_id": family_id, **stats}
+
+
 # ── Test/dev endpoints ────────────────────────────────────────────────
 
 

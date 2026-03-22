@@ -36,5 +36,8 @@ class Settings(BaseSettings):
     # Forward-to email
     forward_email_domain: str = "radar.app"
 
+    # GCal reconciliation interval (minutes). Set to 0 to disable.
+    reconcile_interval_minutes: int = 60
+
 
 settings = Settings()

@@ -3,11 +3,12 @@
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.extraction.schemas import IntentResult, IntentType
+from src.state.models import GcalOutboxOperation
 from src.llm import HAIKU_MODEL, SONNET_MODEL, classify, extract, generate
 from src.state import children as children_dal
 from src.state import events as events_dal
@@ -85,6 +86,28 @@ async def classify_intent(
                     extracted_params={
                         "action": "child_link",
                         "child_name": decoded["response"],
+                    },
+                    pending_action_id=UUID(decoded["action_id"]),
+                )
+            # make_recurring buttons for pattern detection suggestion
+            if decoded["action_type"] == "make_recurring":
+                return IntentResult(
+                    intent=IntentType.approval_response,
+                    confidence=1.0,
+                    extracted_params={
+                        "action": "make_recurring",
+                        "response": decoded["response"],  # "yes" or "no"
+                    },
+                    pending_action_id=UUID(decoded["action_id"]),
+                )
+            # cancel_scope buttons for recurring event cancellation
+            if decoded["action_type"] == "cancel_scope":
+                return IntentResult(
+                    intent=IntentType.approval_response,
+                    confidence=1.0,
+                    extracted_params={
+                        "action": "cancel_scope",
+                        "scope": decoded["response"],  # "this", "future", or "series"
                     },
                     pending_action_id=UUID(decoded["action_id"]),
                 )
@@ -339,7 +362,7 @@ async def _gather_event_context(
     """Gather two-tier event context for smart event matching.
 
     Tier 1: Recent conversation messages for context.
-    Tier 2: Calendar events from GCal (source of truth), with local DB fallback.
+    Tier 2: Calendar events from local DB (authoritative), with GCal fallback.
 
     Returns (conversation_context, calendar_context) as formatted strings.
     """
@@ -350,29 +373,28 @@ async def _gather_event_context(
         recent_texts = [m.content for m in reversed(recent_messages[-10:])]
         conversation_context = "\n".join(recent_texts)
 
-    # Tier 2: Calendar events from GCal
+    # Tier 2: Calendar events from local DB (authoritative)
     days = default_days
-    gcal_context = ""
-    gcal_events: list[dict] = []
+    calendar_context = ""
     try:
-        from src.actions.gcal import list_upcoming_events
-
-        gcal_events = await list_upcoming_events(session, family_id, days=days)
-        if gcal_events:
-            gcal_context = _format_gcal_events(gcal_events)
+        local_events = await events_dal.get_upcoming_events(session, family_id, days=days)
+        if local_events:
+            calendar_context = _format_local_events(local_events)
     except Exception:
-        logger.warning("Could not fetch GCal events for context (family %s)", family_id)
+        logger.warning("Could not fetch local events for context (family %s)", family_id)
 
-    # Fallback to local DB
-    if not gcal_events:
+    # Fallback to GCal if local DB has no events
+    if not calendar_context:
         try:
-            local_events = await events_dal.get_upcoming_events(session, family_id, days=days)
-            if local_events:
-                gcal_context = _format_local_events(local_events)
-        except Exception:
-            logger.warning("Could not fetch local events for context (family %s)", family_id)
+            from src.actions.gcal import list_upcoming_events_from_gcal
 
-    return conversation_context, gcal_context
+            gcal_events = await list_upcoming_events_from_gcal(session, family_id, days=days)
+            if gcal_events:
+                calendar_context = _format_gcal_events(gcal_events)
+        except Exception:
+            logger.warning("Could not fetch GCal events for context (family %s)", family_id)
+
+    return conversation_context, calendar_context
 
 
 def _format_gcal_events(events: list[dict]) -> str:
@@ -685,7 +707,16 @@ async def _handle_add_event(
         + local_now.strftime("%I:%M %p") + " local time. "
         "If the user says 'tomorrow evening' without a specific time, infer a reasonable "
         "time (e.g. 6:00 PM for evening, 12:00 PM for noon/lunch, 9:00 AM for morning). "
-        "All datetimes should include timezone info."
+        "All datetimes should include timezone info.\n\n"
+        "RECURRING EVENTS: If the message describes a recurring event "
+        "(e.g., 'every Monday', 'weekly soccer', 'biweekly piano'), set:\n"
+        "- is_recurring: true\n"
+        "- recurrence_pattern: human-readable (e.g., 'every Monday and Wednesday')\n"
+        "- recurrence_freq: WEEKLY, MONTHLY, or DAILY\n"
+        "- recurrence_days: list of 2-letter day codes [MO, TU, WE, TH, FR, SA, SU]\n"
+        "- recurrence_interval: 1 for weekly, 2 for biweekly, etc.\n"
+        "- recurrence_until: end date if mentioned (null = indefinite)\n"
+        "- datetime_start should be the FIRST occurrence"
     )
 
     try:
@@ -755,6 +786,29 @@ async def _handle_add_event(
 
         return ask_text
 
+    # Build RRULE if recurring event detected
+    rrule_string = None
+    recurrence_human = None
+    if extracted.is_recurring:
+        from src.utils.rrule import build_rrule, rrule_to_human
+
+        if extracted.recurrence_freq and extracted.recurrence_days:
+            rrule_string = build_rrule(
+                freq=extracted.recurrence_freq,
+                byday=extracted.recurrence_days,
+                until=extracted.recurrence_until.date() if extracted.recurrence_until else None,
+                interval=extracted.recurrence_interval,
+            )
+        elif extracted.recurrence_freq:
+            rrule_string = build_rrule(
+                freq=extracted.recurrence_freq,
+                until=extracted.recurrence_until.date() if extracted.recurrence_until else None,
+                interval=extracted.recurrence_interval,
+            )
+
+        if rrule_string:
+            recurrence_human = extracted.recurrence_pattern or rrule_to_human(rrule_string)
+
     # All details present — create event directly (no confirmation needed for manual events)
     event_kwargs: dict = {
         "title": extracted.title,
@@ -770,8 +824,29 @@ async def _handle_add_event(
         event_kwargs["location"] = extracted.location
     if extracted.description:
         event_kwargs["description"] = extracted.description
+    if rrule_string:
+        event_kwargs["is_recurring"] = True
+        event_kwargs["rrule"] = rrule_string
 
     event = await events_dal.create_event(session, family_id, **event_kwargs)
+
+    # Create RecurringSchedule if this is a recurring event
+    if rrule_string:
+        from src.state import schedules as schedules_dal
+
+        schedule = await schedules_dal.create_recurring_schedule(
+            session, family_id,
+            activity_name=extracted.title,
+            pattern=recurrence_human or extracted.recurrence_pattern or rrule_string,
+            rrule=rrule_string,
+            start_date=extracted.datetime_start.date(),
+            end_date=extracted.recurrence_until.date() if extracted.recurrence_until else None,
+            activity_type=extracted.event_type or "other",
+            location=extracted.location,
+            confirmed=True,
+        )
+        event.recurring_schedule_id = schedule.id
+        await session.flush()
 
     # Link children and set up transport (handles inference if no child named)
     transport_result, transport_lines = await _link_children_and_setup_transport(
@@ -795,18 +870,24 @@ async def _handle_add_event(
             event.description = desc
             await session.flush()
 
-    # Write to Google Calendar (source of truth)
+    # Enqueue GCal create via outbox (async, with retry)
     try:
-        from src.actions.gcal import create_calendar_event
+        from src.actions.gcal import event_to_gcal_body
+        from src.state import outbox as outbox_dal
 
-        gcal_ids = await create_calendar_event(session, family_id, event)
-        if gcal_ids:
-            logger.info("Created GCal event(s) %s for '%s'", gcal_ids, extracted.title)
+        payload = event_to_gcal_body(event)
+        await outbox_dal.enqueue_gcal_write(
+            session, family_id, event.id, GcalOutboxOperation.create, payload,
+            idempotency_key=f"create:{event.id}",
+        )
     except Exception:
-        logger.exception("Failed to create GCal event for '%s' — saved locally only", extracted.title)
+        logger.exception("Failed to enqueue GCal create for '%s'", extracted.title)
 
     # Build response
-    parts = [f"✅ Added to your calendar: *{extracted.title}*", f"{dt_str}"]
+    if recurrence_human:
+        parts = [f"🔁 Added recurring event: *{extracted.title}*", f"{recurrence_human}, starting {dt_str}"]
+    else:
+        parts = [f"✅ Added to your calendar: *{extracted.title}*", f"{dt_str}"]
     if extracted.location:
         parts.append(f"📍 {extracted.location}")
 
@@ -859,6 +940,49 @@ async def _handle_add_event(
             except Exception:
                 logger.debug("Could not send child-link buttons", exc_info=True)
 
+    # Check for recurring pattern if this is a non-recurring event
+    if not rrule_string:
+        try:
+            from src.agents.recurrence_detector import detect_recurring_pattern
+
+            candidate = await detect_recurring_pattern(session, family_id, event)
+            if candidate:
+                from src.actions.whatsapp import send_buttons_to_family
+                from src.utils.button_ids import encode_button_id
+
+                # Create pending action for the recurrence question
+                recurrence_pending = await pending_dal.create_pending_action(
+                    session,
+                    family_id=family_id,
+                    action_type=PendingActionType.event_confirmation,
+                    draft_content=f"Make {extracted.title} recurring?",
+                    context={
+                        "ask_type": "make_recurring",
+                        "event_ids": [str(e.id) for e in candidate.events],
+                        "activity_name": candidate.activity_name,
+                        "suggested_rrule": candidate.suggested_rrule,
+                        "human_pattern": candidate.human_pattern,
+                    },
+                    initiated_by=sender_id,
+                    expires_at=datetime.now(UTC) + timedelta(hours=24),
+                )
+
+                recurrence_msg = (
+                    f"\n\nI notice you've added *{candidate.activity_name}* "
+                    f"{len(candidate.events)} times on {candidate.human_pattern.replace('every ', '')}s. "
+                    f"Want to make it a recurring event ({candidate.human_pattern})?"
+                )
+                buttons = [
+                    {"id": encode_button_id("make_recurring", str(recurrence_pending.id), "yes"), "title": "Yes, make weekly"},
+                    {"id": encode_button_id("make_recurring", str(recurrence_pending.id), "no"), "title": "No, keep separate"},
+                ]
+                try:
+                    await send_buttons_to_family(session, family_id, recurrence_msg.strip(), buttons)
+                except Exception:
+                    logger.debug("Could not send recurrence suggestion buttons")
+        except Exception:
+            logger.debug("Pattern detection failed", exc_info=True)
+
     return "\n".join(parts)
 
 
@@ -869,7 +993,7 @@ async def _handle_query_schedule(
     message: str,
     sender_id: UUID,
 ) -> str:
-    """Handle query_schedule intent: query GCal (source of truth) with local DB fallback."""
+    """Handle query_schedule intent: query local DB (authoritative) with GCal fallback."""
     from src.llm import generate
 
     # Determine query range from params
@@ -879,17 +1003,26 @@ async def _handle_query_schedule(
     except (ValueError, TypeError):
         days = 7
 
-    # Try Google Calendar first (source of truth)
+    # Query local DB first (authoritative)
     event_lines = []
-    source = "gcal"
-    try:
-        from src.actions.gcal import list_upcoming_events
+    source = "local"
+    events = await events_dal.get_upcoming_events(session, family_id, days=days)
+    for ev in events:
+        dt_str = ev.datetime_start.strftime("%a %b %d, %I:%M %p")
+        line = f"- {ev.title} — {dt_str}"
+        if ev.location:
+            line += f" @ {ev.location}"
+        event_lines.append(line)
 
-        gcal_events = await list_upcoming_events(session, family_id, days=days)
-        if gcal_events:
+    # Fallback to GCal if local DB has no events
+    if not event_lines:
+        source = "gcal"
+        try:
+            from src.actions.gcal import list_upcoming_events_from_gcal
+
+            gcal_events = await list_upcoming_events_from_gcal(session, family_id, days=days)
             for ev in gcal_events:
                 start = ev.get("start", "")
-                # Parse ISO datetime or date string for display
                 try:
                     from datetime import datetime as dt
 
@@ -906,20 +1039,8 @@ async def _handle_query_schedule(
                 if ev.get("location"):
                     line += f" @ {ev['location']}"
                 event_lines.append(line)
-    except Exception:
-        logger.warning("GCal query failed for family %s, falling back to local DB", family_id)
-        source = "local"
-
-    # Fallback to local DB if GCal returned nothing or failed
-    if not event_lines:
-        source = "local"
-        events = await events_dal.get_upcoming_events(session, family_id, days=days)
-        for ev in events:
-            dt_str = ev.datetime_start.strftime("%a %b %d, %I:%M %p")
-            line = f"- {ev.title} — {dt_str}"
-            if ev.location:
-                line += f" @ {ev.location}"
-            event_lines.append(line)
+        except Exception:
+            logger.warning("GCal fallback also failed for family %s", family_id)
 
     if not event_lines:
         return f"Nothing on the calendar for the next {days} days."
@@ -1042,25 +1163,14 @@ Upcoming calendar events:
                     gcal_body["description"] = modifications["description"]
 
                 if gcal_body:
-                    from src.auth.google_client import get_calendar_service, get_google_credentials
-                    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
-                    for caregiver in caregivers:
-                        if caregiver.google_refresh_token_encrypted is None:
-                            continue
-                        try:
-                            credentials = await get_google_credentials(session, caregiver.id)
-                            service = get_calendar_service(credentials)
-                            service.events().patch(
-                                calendarId="primary",
-                                eventId=gcal_id,
-                                body=gcal_body,
-                            ).execute()
-                            logger.info("Updated GCal event %s for caregiver %s", gcal_id, caregiver.id)
-                            break
-                        except Exception:
-                            logger.debug("Could not update GCal event %s for caregiver %s", gcal_id, caregiver.id)
+                    from src.state import outbox as outbox_dal
+                    await outbox_dal.enqueue_gcal_write(
+                        session, family_id, None, GcalOutboxOperation.patch, gcal_body,
+                        idempotency_key=f"patch:{gcal_id}:{uuid4().hex[:12]}",
+                        gcal_event_id=gcal_id,
+                    )
             except Exception:
-                logger.exception("Failed to push event modification to GCal")
+                logger.exception("Failed to enqueue event modification to GCal")
 
         # Update local DB event
         try:
@@ -1169,28 +1279,65 @@ Upcoming calendar events:
 
         gcal_id = data.get("gcal_id")
 
-        # Cancel from GCal
+        # Find the local event — prefer gcal_id match, fall back to title substring
+        local_ev = None
         if gcal_id:
+            matches = await events_dal.get_events_by_source_ref(
+                session, family_id, f"gcal:{gcal_id}"
+            )
+            if matches:
+                local_ev = matches[0]
+
+        if not local_ev:
             try:
-                from src.actions.gcal import delete_gcal_event_by_id
-                await delete_gcal_event_by_id(session, family_id, gcal_id)
+                local_events = await events_dal.get_upcoming_events(session, family_id, days=90)
+                for ev in local_events:
+                    if ev.title and matched_event.lower() in ev.title.lower():
+                        local_ev = ev
+                        break
             except Exception:
-                logger.exception("Failed to delete GCal event %s", gcal_id)
+                logger.debug("Could not search local events for '%s'", matched_event)
 
-        # Soft-delete locally
-        try:
-            local_events = await events_dal.get_upcoming_events(session, family_id, days=90)
-            for ev in local_events:
-                if ev.title and matched_event.lower() in ev.title.lower():
-                    await events_dal.update_event(
-                        session, family_id, ev.id,
-                        description=(ev.description or "") + "\n[CANCELLED]",
-                    )
-                    logger.info("Soft-deleted local event '%s'", ev.title)
-                    break
-        except Exception:
-            logger.debug("Could not soft-delete local event for '%s'", matched_event)
+        # Check if this is a recurring event — ask user for scope
+        if local_ev and (local_ev.is_recurring or local_ev.recurring_schedule_id):
+            from src.actions.whatsapp import send_buttons_to_family
+            from src.utils.button_ids import encode_button_id
 
+            # Store cancel context as pending action
+            cancel_pending = await pending_dal.create_pending_action(
+                session,
+                family_id=family_id,
+                action_type=PendingActionType.event_confirmation,
+                draft_content=f"Cancel {matched_event}",
+                context={
+                    "cancel_scope": "ask",
+                    "event_id": str(local_ev.id),
+                    "gcal_id": gcal_id,
+                    "matched_event": matched_event,
+                    "schedule_id": str(local_ev.recurring_schedule_id) if local_ev.recurring_schedule_id else None,
+                },
+                initiated_by=sender_id,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+            body = (
+                f"*{matched_event}* is a recurring event. "
+                "What would you like to cancel?"
+            )
+            buttons = [
+                {"id": encode_button_id("cancel_scope", str(cancel_pending.id), "this"), "title": "Just this one"},
+                {"id": encode_button_id("cancel_scope", str(cancel_pending.id), "future"), "title": "All future"},
+                {"id": encode_button_id("cancel_scope", str(cancel_pending.id), "series"), "title": "Entire series"},
+            ]
+            try:
+                await send_buttons_to_family(session, family_id, body, buttons)
+            except Exception:
+                logger.debug("Could not send cancel scope buttons, falling back to single cancel")
+
+            return body
+
+        # Non-recurring event: cancel directly
+        await _cancel_single_event(session, family_id, local_ev, gcal_id, matched_event)
         return data.get("confirmation_message", f"Cancelled *{matched_event}* ✓")
 
     except json.JSONDecodeError:
@@ -1202,6 +1349,132 @@ Upcoming calendar events:
     except Exception:
         logger.exception("Cancel event handler failed")
         return "Sorry, I couldn't process that cancellation. Please try again."
+
+
+async def _cancel_single_event(
+    session: AsyncSession,
+    family_id: UUID,
+    local_ev: "Event | None",
+    gcal_id: str | None,
+    matched_event: str,
+) -> None:
+    """Cancel a single (non-recurring) event: cancel outbox items, enqueue GCal delete, soft-delete locally."""
+    from src.state import outbox as outbox_dal
+
+    if local_ev:
+        try:
+            await outbox_dal.cancel_pending_for_event(session, family_id, local_ev.id)
+        except Exception:
+            logger.debug("Could not cancel pending outbox items for event %s", local_ev.id)
+
+    if gcal_id:
+        try:
+
+            await outbox_dal.enqueue_gcal_write(
+                session, family_id, local_ev.id if local_ev else None,
+                GcalOutboxOperation.delete, {},
+                idempotency_key=f"delete:{gcal_id}:{uuid4().hex[:12]}",
+                gcal_event_id=gcal_id,
+            )
+        except Exception:
+            logger.exception("Failed to enqueue GCal delete for %s", gcal_id)
+
+    if local_ev:
+        try:
+            await events_dal.update_event(
+                session, family_id, local_ev.id,
+                description=(local_ev.description or "") + "\n[CANCELLED]",
+            )
+            logger.info("Soft-deleted local event '%s'", local_ev.title)
+        except Exception:
+            logger.debug("Could not soft-delete local event '%s'", matched_event)
+
+
+async def _handle_cancel_scope(
+    session: AsyncSession,
+    family_id: UUID,
+    pending_action: "PendingAction",
+    scope: str,
+    sender_id: UUID,
+) -> str:
+    """Handle the user's response to 'cancel just this one / all future / entire series'.
+
+    Called from the button handler when the user taps a cancel scope button.
+    """
+    from src.state import outbox as outbox_dal
+    from src.state import schedules as schedules_dal
+
+    ctx = pending_action.context
+    event_id = UUID(ctx["event_id"]) if ctx.get("event_id") else None
+    gcal_id = ctx.get("gcal_id")
+    schedule_id = UUID(ctx["schedule_id"]) if ctx.get("schedule_id") else None
+    matched_event = ctx.get("matched_event", "the event")
+
+    local_ev = None
+    if event_id:
+        local_ev = await events_dal.get_event(session, family_id, event_id)
+
+    if scope == "this":
+        # Cancel just this instance
+        await _cancel_single_event(session, family_id, local_ev, gcal_id, matched_event)
+        if schedule_id and local_ev and local_ev.datetime_start:
+            await schedules_dal.create_schedule_exception(
+                session, family_id, schedule_id,
+                original_date=local_ev.datetime_start.date(),
+                exception_type="cancelled",
+                reason=f"Cancelled by caregiver",
+            )
+        return f"Cancelled this *{matched_event}* only. Future occurrences remain."
+
+    elif scope == "future":
+        # End the recurring schedule from today
+        if schedule_id:
+            from datetime import date
+
+            schedule = await schedules_dal.get_recurring_schedule(session, family_id, schedule_id)
+            if schedule:
+                schedule.end_date = date.today()
+                # Update RRULE to add UNTIL clause
+                if schedule.rrule and "UNTIL=" not in schedule.rrule:
+                    schedule.rrule = schedule.rrule + f";UNTIL={date.today().strftime('%Y%m%d')}T235959Z"
+                await session.flush()
+
+                # Update the master event's rrule too
+                if local_ev and local_ev.rrule:
+                    local_ev.rrule = schedule.rrule
+                    await session.flush()
+
+                    # Push the updated RRULE to GCal via outbox
+
+                    await outbox_dal.enqueue_gcal_write(
+                        session, family_id, local_ev.id, GcalOutboxOperation.update, {},
+                        idempotency_key=f"update:{local_ev.id}:{uuid4().hex[:12]}",
+                    )
+
+        return f"Cancelled all future *{matched_event}* events."
+
+    elif scope == "series":
+        # Delete the entire series
+        if schedule_id:
+            # Cancel all events in this schedule
+            local_events = await events_dal.get_upcoming_events(session, family_id, days=365)
+            for ev in local_events:
+                if ev.recurring_schedule_id == schedule_id:
+                    await _cancel_single_event(session, family_id, ev, None, ev.title or matched_event)
+
+            await schedules_dal.delete_recurring_schedule(session, family_id, schedule_id)
+
+        # Delete the master event from GCal
+        if gcal_id:
+            await outbox_dal.enqueue_gcal_write(
+                session, family_id, None, GcalOutboxOperation.delete, {},
+                idempotency_key=f"delete:{gcal_id}:{uuid4().hex[:12]}",
+                gcal_event_id=gcal_id,
+            )
+
+        return f"Cancelled the entire *{matched_event}* series."
+
+    return f"Cancelled *{matched_event}* ✓"
 
 
 async def _handle_assign_transport(
@@ -1387,6 +1660,97 @@ async def _handle_approval_response(
 
     if not pending_action_id:
         return "I'm not sure which action you're responding to. Could you clarify?"
+
+    if action_type == "make_recurring":
+        # User responded to "Want to make it recurring?"
+        response = intent.extracted_params.get("response", "no")
+        pending_action = await pending_dal.get_pending_action(
+            session, family_id, pending_action_id
+        )
+        if not pending_action or pending_action.context.get("ask_type") != "make_recurring":
+            return "I'm not sure what you're referring to. Could you clarify?"
+
+        await pending_dal.resolve_pending(
+            session, family_id, pending_action_id,
+            status=PendingActionStatus.approved if response == "yes" else PendingActionStatus.dismissed,
+            resolved_by=sender_id,
+        )
+
+        if response != "yes":
+            return "Got it, keeping them as separate events."
+
+        # Convert existing events to a recurring schedule
+        ctx = pending_action.context
+        rrule_string = ctx.get("suggested_rrule", "")
+        human_pattern = ctx.get("human_pattern", "")
+        activity_name = ctx.get("activity_name", "")
+        event_ids = [UUID(eid) for eid in ctx.get("event_ids", [])]
+
+        if rrule_string and event_ids:
+            from sqlalchemy import select as sa_select
+
+            from src.state import outbox as outbox_dal
+            from src.state import schedules as schedules_dal
+            from src.state.models import Event
+
+            # Batch fetch all events in one query
+            result = await session.execute(
+                sa_select(Event).where(
+                    Event.family_id == family_id,
+                    Event.id.in_(event_ids),
+                )
+            )
+            matched_events = list(result.scalars().all())
+            matched_events.sort(key=lambda e: e.datetime_start or datetime.max)
+
+            first_event = matched_events[0] if matched_events else None
+
+            if first_event:
+                schedule = await schedules_dal.create_recurring_schedule(
+                    session, family_id,
+                    activity_name=activity_name,
+                    pattern=human_pattern,
+                    rrule=rrule_string,
+                    start_date=first_event.datetime_start.date(),
+                    confirmed=True,
+                    location=first_event.location,
+                    activity_type=first_event.type or "other",
+                )
+
+                # Update all events to link to the schedule
+                for ev in matched_events:
+                    ev.is_recurring = True
+                    ev.recurring_schedule_id = schedule.id
+                    ev.rrule = rrule_string
+
+                # Push updated first event to GCal with RRULE
+                await outbox_dal.enqueue_gcal_write(
+                    session, family_id, first_event.id, GcalOutboxOperation.update, {},
+                    idempotency_key=f"update:{first_event.id}:{uuid4().hex[:12]}",
+                )
+                await session.flush()
+
+                return f"Done! *{activity_name}* is now a recurring event ({human_pattern})."
+
+        return "I couldn't set that up as recurring. Please try adding it again with 'every Monday' in your message."
+
+    if action_type == "cancel_scope":
+        # Caregiver answered "Just this one / All future / Entire series"
+        scope = intent.extracted_params.get("scope", "this")
+        pending_action = await pending_dal.get_pending_action(
+            session, family_id, pending_action_id
+        )
+        if not pending_action or pending_action.context.get("cancel_scope") != "ask":
+            return "I'm not sure what you're referring to. Could you clarify?"
+
+        result = await _handle_cancel_scope(
+            session, family_id, pending_action, scope, sender_id
+        )
+        await pending_dal.resolve_pending(
+            session, family_id, pending_action_id,
+            status=PendingActionStatus.approved, resolved_by=sender_id,
+        )
+        return result
 
     if action_type == "child_link":
         # Caregiver answered "Which kid is this for?"
@@ -1596,15 +1960,18 @@ async def _create_event_from_pending(
             event.description = desc
             await session.flush()
 
-    # Write to Google Calendar (source of truth)
+    # Enqueue GCal create via outbox (async, with retry)
     try:
-        from src.actions.gcal import create_calendar_event
+        from src.actions.gcal import event_to_gcal_body
+        from src.state import outbox as outbox_dal
 
-        gcal_ids = await create_calendar_event(session, family_id, event)
-        if gcal_ids:
-            logger.info("Created GCal event(s) %s for '%s'", gcal_ids, title)
+        payload = event_to_gcal_body(event)
+        await outbox_dal.enqueue_gcal_write(
+            session, family_id, event.id, GcalOutboxOperation.create, payload,
+            idempotency_key=f"create:{event.id}",
+        )
     except Exception:
-        logger.exception("Failed to create GCal event for '%s' — saved locally only", title)
+        logger.exception("Failed to enqueue GCal create for '%s'", title)
 
     parts = [f"✅ Added to your calendar: *{title}*", f"{dt_str}"]
     if event_data.get("location"):
@@ -1906,34 +2273,16 @@ Upcoming calendar events:
 
         if updated_description and gcal_id:
             try:
-                from src.actions.gcal import list_upcoming_events
-                from src.auth.google_client import get_calendar_service, get_google_credentials
-                from src.state import families as families_dal
+                from src.state import outbox as outbox_dal
 
-                caregivers = await families_dal.get_caregivers_for_family(session, family_id)
-                for caregiver in caregivers:
-                    if caregiver.google_refresh_token_encrypted is None:
-                        continue
-                    try:
-                        credentials = await get_google_credentials(session, caregiver.id)
-                        service = get_calendar_service(credentials)
-                        service.events().patch(
-                            calendarId="primary",
-                            eventId=gcal_id,
-                            body={"description": updated_description},
-                        ).execute()
-                        logger.info(
-                            "Updated GCal event %s description for caregiver %s",
-                            gcal_id, caregiver.id,
-                        )
-                        break  # Only need to update on one calendar
-                    except Exception:
-                        logger.debug(
-                            "Could not update GCal event %s for caregiver %s",
-                            gcal_id, caregiver.id,
-                        )
+                await outbox_dal.enqueue_gcal_write(
+                    session, family_id, None, GcalOutboxOperation.patch,
+                    {"description": updated_description},
+                    idempotency_key=f"patch:{gcal_id}:{uuid4().hex[:12]}",
+                    gcal_event_id=gcal_id,
+                )
             except Exception:
-                logger.exception("Failed to push event update to GCal")
+                logger.exception("Failed to enqueue event update to GCal")
 
         # Also update local DB event if it exists
         try:

@@ -87,6 +87,21 @@ class ActionItemStatus(enum.StrEnum):
     dismissed = "dismissed"
 
 
+class GcalOutboxOperation(enum.StrEnum):
+    create = "create"
+    update = "update"
+    patch = "patch"
+    delete = "delete"
+
+
+class GcalOutboxStatus(enum.StrEnum):
+    pending = "pending"
+    processing = "processing"
+    done = "done"
+    failed = "failed"
+    dead = "dead"
+
+
 class PendingActionType(enum.StrEnum):
     rsvp_email = "rsvp_email"
     playdate_message = "playdate_message"
@@ -249,13 +264,14 @@ class RecurringSchedule(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
-    child_id: Mapped[UUID] = mapped_column(ForeignKey("children.id", ondelete="CASCADE"), nullable=False)
+    child_id: Mapped[UUID | None] = mapped_column(ForeignKey("children.id", ondelete="SET NULL"))
     activity_name: Mapped[str] = mapped_column(Text, nullable=False)
     activity_type: Mapped[ActivityType] = mapped_column(default=ActivityType.other)
     pattern: Mapped[str] = mapped_column(Text, nullable=False)
+    rrule: Mapped[str | None] = mapped_column(Text)
     location: Mapped[str | None] = mapped_column(Text)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date)
     confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     default_drop_off_caregiver: Mapped[UUID | None] = mapped_column(ForeignKey("caregivers.id"))
     default_pick_up_caregiver: Mapped[UUID | None] = mapped_column(ForeignKey("caregivers.id"))
@@ -314,6 +330,7 @@ class Event(Base):
     recurring_schedule_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("recurring_schedules.id", ondelete="SET NULL")
     )
+    rrule: Mapped[str | None] = mapped_column(Text)
 
     # RSVP
     rsvp_status: Mapped[RsvpStatus] = mapped_column(nullable=False, default=RsvpStatus.not_applicable)
@@ -566,3 +583,34 @@ class ExtractionFeedback(Base):
     )
 
     __table_args__ = (Index("idx_feedback_family", "family_id"),)
+
+
+# ── GCal outbox ────────────────────────────────────────────────────────
+
+
+class GcalOutboxItem(Base):
+    __tablename__ = "gcal_outbox"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
+    event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id", ondelete="SET NULL"))
+    operation: Mapped[GcalOutboxOperation] = mapped_column(nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    gcal_event_id: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[GcalOutboxStatus] = mapped_column(nullable=False, default=GcalOutboxStatus.pending)
+    retry_count: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    max_retries: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=5)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("NOW()")
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_retry_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("NOW()")
+    )
+
+    __table_args__ = (
+        Index("idx_gcal_outbox_family", "family_id"),
+        Index("idx_gcal_outbox_pending", "status", "next_retry_at"),
+    )

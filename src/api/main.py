@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -40,9 +41,35 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Database connection failed: %s", e)
 
+    # Start background processors
+    background_tasks: list[asyncio.Task] = []
+    try:
+        from src.actions.gcal_outbox_processor import process_outbox_loop
+
+        outbox_task = asyncio.create_task(process_outbox_loop())
+        background_tasks.append(outbox_task)
+    except Exception as e:
+        logger.warning("Could not start outbox processor: %s", e)
+
+    try:
+        from src.actions.gcal_reconciler import reconcile_loop
+
+        reconciler_task = asyncio.create_task(reconcile_loop())
+        background_tasks.append(reconciler_task)
+    except Exception as e:
+        logger.warning("Could not start GCal reconciler: %s", e)
+
     yield
 
-    # Shutdown
+    # Shutdown: cancel background tasks
+    for task in background_tasks:
+        task.cancel()
+    for task in background_tasks:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     await engine.dispose()
     logger.info("Radar shut down")
 
