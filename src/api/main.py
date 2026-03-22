@@ -52,20 +52,12 @@ async def lifespan(app: FastAPI):
         logger.warning("Could not start outbox processor: %s", e)
 
     try:
-        from src.actions.gcal_reconciler import reconcile_all_families, reconcile_loop
+        from src.actions.gcal_reconciler import reconcile_loop
 
+        # reconcile_loop() runs reconcile_all_families() immediately on first
+        # iteration before sleeping, so no separate startup task is needed.
         reconciler_task = asyncio.create_task(reconcile_loop())
         background_tasks.append(reconciler_task)
-
-        # Run immediate reconciliation on startup so local DB is fresh
-        async def _startup_reconcile():
-            try:
-                stats = await reconcile_all_families()
-                logger.info("Startup reconciliation complete: %s", stats)
-            except Exception as exc:
-                logger.warning("Startup reconciliation failed (non-fatal): %s", exc)
-
-        asyncio.create_task(_startup_reconcile())
     except Exception as e:
         logger.warning("Could not start GCal reconciler: %s", e)
 
