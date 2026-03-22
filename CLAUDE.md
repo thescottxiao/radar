@@ -62,13 +62,16 @@ src/
 │   ├── research.py   # Research Agent (camps, gifts, venues)
 │   └── reminders.py  # Reminder Engine (daily digest, weekly summary, immediate triggers)
 ├── actions/          # External side effects
-│   ├── gcal.py       # Google Calendar write operations
+│   ├── gcal.py       # Google Calendar CRUD operations
+│   ├── gcal_outbox_processor.py  # Background loop processing GCal outbox items
+│   ├── gcal_reconciler.py        # Periodic local DB ↔ GCal reconciliation
 │   ├── whatsapp.py   # WhatsApp message sending (templates + free-form)
 │   ├── email.py      # Email sending (RSVPs, playdate messages)
 │   └── state.py      # Family state updates (Event Registry, profiles, learnings)
 ├── state/            # Data access layer
 │   ├── models.py     # SQLAlchemy models matching docs/schema.sql
 │   ├── events.py     # Event Registry queries (CRUD, dedup, search)
+│   ├── outbox.py     # GCal outbox DAL (enqueue, claim, mark done/failed)
 │   ├── families.py   # Family and Caregiver queries
 │   ├── children.py   # Child profile queries
 │   ├── learning.py   # FamilyLearning queries
@@ -114,15 +117,17 @@ src/
 4. **AUTO actions execute without approval** but are always logged and surfaced in digests.
 5. **Concurrent input on SUGGEST actions requires consensus.** If multiple caregivers respond with contradictory instructions to a pending external action, the bot pauses and surfaces the conflict. It does not execute until resolved.
 5. **Extraction confidence below 0.6** triggers explicit confirmation ("Is this right?"). Above 0.6 gets implicit correction opportunity.
-6. **Google Calendar is the source of truth for schedule queries.** `_handle_query_schedule` calls `list_upcoming_events()` from `src/actions/gcal.py` to query GCal directly. Falls back to local Event Registry if GCal is unavailable.
-7. **Confirmed events are written to both local DB and GCal.** When a caregiver confirms an event (button tap or text), the event is created in the Event Registry AND pushed to Google Calendar via `create_calendar_event()`.
-8. **Event updates push to GCal.** When a user says something like "I bought the gift," the `event_update` handler matches it to an event (via conversation context or GCal search), updates the description (e.g., ☐ → ☑), and pushes the change to GCal via `events().patch()`.
-9. **GCal webhook changes do NOT generate WhatsApp notifications.** GCal is the source of truth — changes made directly in GCal (adds, updates, deletions) are synced to the local Event Registry silently. WhatsApp notifications for events come only from email ingestion.
-10. **Cancel/modify handlers use smart event matching.** `_handle_cancel_event` and `_handle_modify_event` use a two-tier context strategy (conversation memory + GCal search with 90-day window) and LLM matching to identify events, same as `_handle_event_update`.
-11. **Transport coordination only applies to child events with 2+ caregivers.** Gate on: `family.children` non-empty AND `event.child_id IS NOT NULL` AND `len(active_caregivers) >= 2`. Single-caregiver families get silent auto-assignment. Families with no children skip transport entirely.
-12. **Transport routines are inferred, not asked.** After 3 consistent claims by the same caregiver for the same (recurring_schedule, day_of_week, role), create an unconfirmed FamilyLearning. Confirmed via weekly summary with no correction. Never ask "who usually handles pickup?" upfront.
-13. **Sibling transport conflicts are flagged, not resolved.** When the same caregiver is assigned to overlapping events (±30 min) for different children at different locations, notify all caregivers. Do not propose which caregiver should swap.
-14. **Transport swaps clear the instance, not the routine.** "I can't do pickup Thursday" clears that event's assignment but leaves the RecurringSchedule default intact for future weeks.
+6. **Local DB is authoritative for schedule queries.** `_handle_query_schedule` queries `events_dal.get_upcoming_events()` first. Falls back to GCal API only if local DB has no events for the family (e.g., pre-sync).
+7. **Confirmed events are written to local DB first, then synced to GCal via the outbox.** When a caregiver confirms an event, it's created in the Event Registry and a `create` entry is enqueued in `gcal_outbox`. The outbox processor handles GCal API calls asynchronously with retry.
+8. **Event updates go through the outbox.** When a user updates an event (e.g., "I bought the gift"), the local DB is updated first, then a `patch` or `update` entry is enqueued in `gcal_outbox`.
+9. **GCal webhook changes are imported into the authoritative local DB.** Changes made directly in GCal are synced to the Event Registry silently (no WhatsApp notifications). For events with `source=calendar`, GCal wins on reconciliation. For all other sources, local DB wins.
+10. **GCal writes go through the outbox.** Never call GCal API directly from request handlers. Use `outbox_dal.enqueue_gcal_write()` instead. The outbox processor (`gcal_outbox_processor.py`) polls every 5s with exponential backoff retry (30s → 2h, max 5 retries).
+11. **Outbox idempotency keys prevent duplicate GCal operations.** Format: `create:{event_id}` for creates, `update:{event_id}:{timestamp_ms}` or `patch:{gcal_id}:{timestamp_ms}` for updates.
+12. **Cancel/modify handlers use smart event matching.** `_handle_cancel_event` and `_handle_modify_event` use a two-tier context strategy (conversation memory + local DB search with 90-day window) and LLM matching to identify events, same as `_handle_event_update`.
+13. **Transport coordination only applies to child events with 2+ caregivers.** Gate on: `family.children` non-empty AND `event.child_id IS NOT NULL` AND `len(active_caregivers) >= 2`. Single-caregiver families get silent auto-assignment. Families with no children skip transport entirely.
+14. **Transport routines are inferred, not asked.** After 3 consistent claims by the same caregiver for the same (recurring_schedule, day_of_week, role), create an unconfirmed FamilyLearning. Confirmed via weekly summary with no correction. Never ask "who usually handles pickup?" upfront.
+15. **Sibling transport conflicts are flagged, not resolved.** When the same caregiver is assigned to overlapping events (±30 min) for different children at different locations, notify all caregivers. Do not propose which caregiver should swap.
+16. **Transport swaps clear the instance, not the routine.** "I can't do pickup Thursday" clears that event's assignment but leaves the RecurringSchedule default intact for future weeks.
 
 ### WhatsApp Rules
 

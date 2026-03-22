@@ -164,8 +164,8 @@ async def _handle_cancellation(
         description=(event.description or "") + "\n[CANCELLED]",
     )
 
-    # No WhatsApp notification — GCal is the source of truth, the user
-    # already knows about changes they made directly in their calendar.
+    # No WhatsApp notification — importing GCal change into authoritative local DB.
+    # The user already knows about changes they made directly in their calendar.
     return {
         "change_type": "cancellation",
         "event_id": event.id,
@@ -225,8 +225,8 @@ async def _handle_update(
     # Determine primary change type for classification
     change_type = "time_change" if "datetime_start" in update_kwargs else "location_change"
 
-    # No WhatsApp notification — GCal is the source of truth, the user
-    # already knows about changes they made directly in their calendar.
+    # No WhatsApp notification — importing GCal change into authoritative local DB.
+    # The user already knows about changes they made directly in their calendar.
     return {
         "change_type": change_type,
         "event_id": existing_event.id,

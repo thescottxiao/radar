@@ -14,12 +14,18 @@ from src.state.models import Caregiver, Event
 
 logger = logging.getLogger(__name__)
 
+
+def _strip_gcal_refs(refs: list[str]) -> list[str]:
+    """Strip the 'gcal:' prefix from source_refs to get raw GCal event IDs."""
+    return [r.removeprefix("gcal:") for r in refs if r.startswith("gcal:")]
+
+
 # GCal watch channels expire after 7 days; renew on 5-day intervals
 WATCH_EXPIRY_DAYS = 7
 WATCH_RENEW_INTERVAL_DAYS = 5
 
 
-def _event_to_gcal_body(
+def event_to_gcal_body(
     event: Event, caregiver_map: dict[UUID, str] | None = None
 ) -> dict:
     """Convert a Radar Event model to a Google Calendar API event body.
@@ -78,15 +84,22 @@ def _event_to_gcal_body(
         if start_dt.tzinfo is None:
             body["end"]["timeZone"] = "UTC"
 
+    # Add recurrence rule if this is a recurring event
+    if event.rrule:
+        from src.utils.rrule import rrule_to_gcal
+
+        body["recurrence"] = rrule_to_gcal(event.rrule)
+
     return body
 
 
-async def list_upcoming_events(
+async def list_upcoming_events_from_gcal(
     session: AsyncSession, family_id: UUID, days: int = 7
 ) -> list[dict]:
     """Query Google Calendar directly for upcoming events.
 
-    Returns a list of simplified event dicts from GCal (the source of truth).
+    Returns a list of simplified event dicts from GCal.
+    Used for reconciliation and as a fallback when local DB has no events.
     Falls back to empty list if no caregiver has Google tokens.
     """
     caregivers = await families_dal.get_caregivers_for_family(session, family_id)
@@ -157,7 +170,7 @@ async def create_calendar_event(
     caregivers = await families_dal.get_caregivers_for_family(session, family_id)
     caregiver_map = build_caregiver_name_map(caregivers)
     gcal_event_ids: list[str] = []
-    body = _event_to_gcal_body(event, caregiver_map=caregiver_map)
+    body = event_to_gcal_body(event, caregiver_map=caregiver_map)
 
     for caregiver in caregivers:
         if caregiver.google_refresh_token_encrypted is None:
@@ -186,10 +199,10 @@ async def create_calendar_event(
                 "Failed to create GCal event for caregiver %s", caregiver.id
             )
 
-    # Store GCal IDs as source_refs on the event
+    # Store GCal IDs as source_refs on the event (with gcal: prefix for lookup consistency)
     if gcal_event_ids:
         existing_refs = event.source_refs or []
-        event.source_refs = existing_refs + gcal_event_ids
+        event.source_refs = existing_refs + [f"gcal:{gid}" for gid in gcal_event_ids]
         await session.flush()
 
     return gcal_event_ids
@@ -206,8 +219,8 @@ async def update_calendar_event(
 
     caregivers = await families_dal.get_caregivers_for_family(session, family_id)
     caregiver_map = build_caregiver_name_map(caregivers)
-    body = _event_to_gcal_body(event, caregiver_map=caregiver_map)
-    gcal_ids = event.source_refs or []
+    body = event_to_gcal_body(event, caregiver_map=caregiver_map)
+    gcal_ids = _strip_gcal_refs(event.source_refs or [])
 
     for caregiver in caregivers:
         if caregiver.google_refresh_token_encrypted is None:
@@ -247,7 +260,7 @@ async def delete_calendar_event(
 ) -> None:
     """Delete an event from all connected caregivers' calendars."""
     caregivers = await families_dal.get_caregivers_for_family(session, family_id)
-    gcal_ids = event.source_refs or []
+    gcal_ids = _strip_gcal_refs(event.source_refs or [])
 
     for caregiver in caregivers:
         if caregiver.google_refresh_token_encrypted is None:
@@ -303,6 +316,45 @@ async def delete_gcal_event_by_id(
             logger.debug(
                 "Could not delete GCal event %s for caregiver %s",
                 gcal_id,
+                caregiver.id,
+            )
+
+
+async def patch_calendar_event(
+    session: AsyncSession,
+    family_id: UUID,
+    gcal_event_id: str,
+    patch_body: dict,
+) -> None:
+    """Patch a single GCal event on all connected caregivers' calendars.
+
+    Args:
+        gcal_event_id: Raw GCal event ID (without 'gcal:' prefix).
+        patch_body: Dict of fields to patch (e.g. {"description": "..."}).
+    """
+    # Strip prefix if caller accidentally passes it
+    raw_id = gcal_event_id.removeprefix("gcal:")
+    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+
+    for caregiver in caregivers:
+        if caregiver.google_refresh_token_encrypted is None:
+            continue
+        try:
+            credentials = await get_google_credentials(session, caregiver.id)
+            service = get_calendar_service(credentials)
+            service.events().patch(
+                calendarId="primary",
+                eventId=raw_id,
+                body=patch_body,
+            ).execute()
+            logger.info(
+                "Patched GCal event %s for caregiver %s", raw_id, caregiver.id
+            )
+            break  # Only need to patch on one calendar
+        except Exception:
+            logger.debug(
+                "Could not patch GCal event %s for caregiver %s",
+                raw_id,
                 caregiver.id,
             )
 

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.state.models import Caregiver, Family
@@ -155,6 +155,22 @@ async def get_caregivers_needing_watch_renewal(
                 | (Caregiver.gmail_watch_expiry.is_(None))
                 | (Caregiver.gcal_watch_expiry.is_(None))
             ),
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def get_families_with_google(session: AsyncSession) -> list[Family]:
+    """Get all families that have at least one caregiver with Google tokens."""
+    result = await session.execute(
+        select(Family).where(
+            exists(
+                select(Caregiver.id).where(
+                    Caregiver.family_id == Family.id,
+                    Caregiver.is_active.is_(True),
+                    Caregiver.google_refresh_token_encrypted.is_not(None),
+                )
+            )
         )
     )
     return list(result.scalars().all())

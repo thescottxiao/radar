@@ -831,7 +831,7 @@ class TestHandleAssignmentClaimBroadcast:
 class TestGCalTransportDescription:
     def test_appends_transport_section(self):
         """Transport section is appended to GCal description."""
-        from src.actions.gcal import _event_to_gcal_body
+        from src.actions.gcal import event_to_gcal_body
 
         family_id = uuid4()
         mom_id = uuid4()
@@ -840,7 +840,7 @@ class TestGCalTransportDescription:
         event.description = "Bring water bottle"
 
         caregiver_map = {mom_id: "Mom", dad_id: "Dad"}
-        body = _event_to_gcal_body(event, caregiver_map=caregiver_map)
+        body = event_to_gcal_body(event, caregiver_map=caregiver_map)
 
         assert "🚗 Transport" in body["description"]
         assert "Drop-off: Mom" in body["description"]
@@ -849,32 +849,32 @@ class TestGCalTransportDescription:
 
     def test_no_transport_without_assignments(self):
         """No transport section when no assignments exist."""
-        from src.actions.gcal import _event_to_gcal_body
+        from src.actions.gcal import event_to_gcal_body
 
         family_id = uuid4()
         event = _make_event(family_id, drop_off_by=None, pick_up_by=None)
         event.description = "Just a regular event"
 
-        body = _event_to_gcal_body(event, caregiver_map={})
+        body = event_to_gcal_body(event, caregiver_map={})
 
         assert "🚗 Transport" not in body.get("description", "")
 
     def test_no_transport_without_caregiver_map(self):
         """No transport section when caregiver_map is None."""
-        from src.actions.gcal import _event_to_gcal_body
+        from src.actions.gcal import event_to_gcal_body
 
         family_id = uuid4()
         mom_id = uuid4()
         event = _make_event(family_id, drop_off_by=mom_id, pick_up_by=None)
         event.description = "Event"
 
-        body = _event_to_gcal_body(event, caregiver_map=None)
+        body = event_to_gcal_body(event, caregiver_map=None)
 
         assert "🚗 Transport" not in body.get("description", "")
 
     def test_replaces_existing_transport_section(self):
         """Existing transport section is replaced, not duplicated."""
-        from src.actions.gcal import _event_to_gcal_body
+        from src.actions.gcal import event_to_gcal_body
 
         family_id = uuid4()
         mom_id = uuid4()
@@ -883,7 +883,7 @@ class TestGCalTransportDescription:
         event.description = "Details here\n\n🚗 Transport\nDrop-off: Old\nPick-up: Old"
 
         caregiver_map = {mom_id: "Mom", dad_id: "Dad"}
-        body = _event_to_gcal_body(event, caregiver_map=caregiver_map)
+        body = event_to_gcal_body(event, caregiver_map=caregiver_map)
 
         # Should only appear once
         assert body["description"].count("🚗 Transport") == 1

@@ -123,13 +123,14 @@ CREATE TYPE activity_type AS ENUM (
 CREATE TABLE recurring_schedules (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
-    child_id        UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+    child_id        UUID REFERENCES children(id) ON DELETE SET NULL,  -- NULL for adult events
     activity_name   TEXT NOT NULL,  -- e.g. "soccer", "piano lessons", "swim class"
     activity_type   activity_type NOT NULL DEFAULT 'other',
     pattern         TEXT NOT NULL,  -- human-readable, e.g. "every Wednesday, 3:30-4:30pm"
+    rrule           TEXT,           -- RFC 5545 RRULE string, e.g. "FREQ=WEEKLY;BYDAY=MO"
     location        TEXT,
     start_date      DATE NOT NULL,
-    end_date        DATE NOT NULL,
+    end_date        DATE,           -- NULL = indefinite recurrence
     confirmed       BOOLEAN NOT NULL DEFAULT FALSE,
     default_drop_off_caregiver UUID REFERENCES caregivers(id),
     default_pick_up_caregiver UUID REFERENCES caregivers(id),
@@ -170,6 +171,7 @@ CREATE TABLE events (
     -- Recurrence
     is_recurring    BOOLEAN NOT NULL DEFAULT FALSE,
     recurring_schedule_id UUID REFERENCES recurring_schedules(id) ON DELETE SET NULL,
+    rrule           TEXT,           -- RFC 5545 RRULE string for GCal sync
 
     -- RSVP
     rsvp_status     rsvp_status NOT NULL DEFAULT 'not_applicable',
@@ -402,6 +404,30 @@ CREATE TABLE extraction_feedback (
 CREATE INDEX idx_feedback_family ON extraction_feedback(family_id);
 
 -- ============================================================
+-- GCal outbox (async GCal writes with retry)
+-- ============================================================
+
+CREATE TABLE gcal_outbox (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    event_id        UUID REFERENCES events(id) ON DELETE SET NULL,
+    operation       TEXT NOT NULL CHECK (operation IN ('create', 'update', 'patch', 'delete')),
+    payload         JSONB NOT NULL,
+    gcal_event_id   TEXT,           -- for update/patch/delete; NULL for create
+    status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'done', 'failed', 'dead')),
+    retry_count     SMALLINT NOT NULL DEFAULT 0,
+    max_retries     SMALLINT NOT NULL DEFAULT 5,
+    last_error      TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed_at    TIMESTAMPTZ,
+    next_retry_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_gcal_outbox_family ON gcal_outbox(family_id);
+CREATE INDEX idx_gcal_outbox_pending ON gcal_outbox(status, next_retry_at) WHERE status IN ('pending', 'failed');
+
+-- ============================================================
 -- Row-Level Security (RLS)
 -- ============================================================
 -- Enable RLS on all tables. Application role must set
@@ -425,6 +451,7 @@ ALTER TABLE conversation_memory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ics_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pending_actions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE extraction_feedback ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gcal_outbox ENABLE ROW LEVEL SECURITY;
 
 -- Create policies (example for events, repeat pattern for all tables)
 CREATE POLICY tenant_isolation_events ON events
@@ -476,6 +503,9 @@ CREATE POLICY tenant_isolation_pending ON pending_actions
     USING (family_id = current_setting('app.current_family_id')::UUID);
 
 CREATE POLICY tenant_isolation_feedback ON extraction_feedback
+    USING (family_id = current_setting('app.current_family_id')::UUID);
+
+CREATE POLICY tenant_isolation_gcal_outbox ON gcal_outbox
     USING (family_id = current_setting('app.current_family_id')::UUID);
 
 -- Families table uses its own id
