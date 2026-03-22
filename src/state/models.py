@@ -346,6 +346,7 @@ class Event(Base):
     # Metadata
     extraction_confidence: Mapped[float | None] = mapped_column(Float)
     confirmed_by_caregiver: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("NOW()")
     )

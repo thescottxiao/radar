@@ -187,6 +187,7 @@ CREATE TABLE events (
     -- Metadata
     extraction_confidence FLOAT,  -- 0.0-1.0, from Email Extraction Agent
     confirmed_by_caregiver BOOLEAN NOT NULL DEFAULT FALSE,
+    cancelled_at    TIMESTAMPTZ,  -- soft-delete: set when event is cancelled
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -195,6 +196,7 @@ CREATE INDEX idx_events_family ON events(family_id);
 CREATE INDEX idx_events_datetime ON events(family_id, datetime_start);
 CREATE INDEX idx_events_recurring ON events(recurring_schedule_id);
 CREATE INDEX idx_events_type ON events(family_id, type);
+CREATE INDEX idx_events_active ON events(family_id, datetime_start) WHERE cancelled_at IS NULL;
 
 -- Junction table: events <-> children
 CREATE TABLE event_children (

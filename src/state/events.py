@@ -39,6 +39,7 @@ async def get_events_in_range(
         select(Event)
         .where(
             Event.family_id == family_id,
+            Event.cancelled_at.is_(None),
             Event.datetime_start >= start,
             Event.datetime_start < end,
         )
@@ -67,6 +68,7 @@ async def get_events_needing_rsvp(
     result = await session.execute(
         select(Event).where(
             Event.family_id == family_id,
+            Event.cancelled_at.is_(None),
             Event.rsvp_status == RsvpStatus.pending,
             Event.rsvp_deadline.is_not(None),
         ).options(selectinload(Event.children))
