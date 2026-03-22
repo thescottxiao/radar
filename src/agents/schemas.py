@@ -175,6 +175,38 @@ class ExtractedAssignment(BaseModel):
     )
 
 
+class ExtractedBulkAssignment(BaseModel):
+    """Transport assignment that may cover one or multiple events."""
+
+    scope: str = Field(
+        default="single",
+        description=(
+            "How many events this assignment covers. "
+            "'all' = every upcoming event needing transport. "
+            "'specific' = a named subset of events. "
+            "'single' = one event (default)."
+        ),
+    )
+    role: str = Field(
+        default="both",
+        description="One of: drop_off, pick_up, both. Applies to all events unless overridden.",
+    )
+    assigned_caregiver: str | None = Field(
+        default=None,
+        description=(
+            "Name of the caregiver being assigned. Null if the sender is volunteering themselves."
+        ),
+    )
+    assignments: list[ExtractedAssignment] = Field(
+        default_factory=list,
+        description=(
+            "Individual event assignments. Populated when scope='specific' or 'single'. "
+            "For scope='all', this can be empty — all events needing transport are assigned. "
+            "For scope='specific', list each event the user mentioned."
+        ),
+    )
+
+
 class ExtractedRelease(BaseModel):
     """Transport release extracted from message (caregiver can't cover an assignment)."""
 
@@ -189,6 +221,31 @@ class ExtractedRelease(BaseModel):
     role: str = Field(
         default="both",
         description="One of: drop_off, pick_up, both",
+    )
+
+
+class ExtractedBulkRelease(BaseModel):
+    """Transport release that may cover one or multiple events."""
+
+    scope: str = Field(
+        default="single",
+        description=(
+            "How many events this release covers. "
+            "'all' = every event the sender is assigned to. "
+            "'specific' = a named subset of events. "
+            "'single' = one event (default)."
+        ),
+    )
+    role: str = Field(
+        default="both",
+        description="One of: drop_off, pick_up, both. Applies to all events unless overridden.",
+    )
+    releases: list[ExtractedRelease] = Field(
+        default_factory=list,
+        description=(
+            "Individual event releases. Populated when scope='specific' or 'single'. "
+            "For scope='all', this can be empty — all assigned events are released."
+        ),
     )
 
 

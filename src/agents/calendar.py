@@ -7,13 +7,15 @@ extraction.
 
 import logging
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.schemas import (
     Conflict,
     ExtractedAssignment,
+    ExtractedBulkAssignment,
+    ExtractedBulkRelease,
     ExtractedCorrection,
     ExtractedEvent,
     ExtractedRelease,
@@ -72,7 +74,7 @@ Recently mentioned events:
 """
 
 ASSIGNMENT_EXTRACTION_SYSTEM = """\
-You are extracting a transport assignment from a parent's message.
+You are extracting transport assignment(s) from a parent's message.
 The parent may be volunteering themselves OR assigning another caregiver.
 
 Family children: {children_names}
@@ -81,6 +83,16 @@ Upcoming events needing transport:
 {upcoming_events}
 {recent_context}
 IMPORTANT:
+- Determine the SCOPE of the assignment:
+  - If the user says "all of them", "handle everything", "I'll do transport for all",
+    "I'll take care of all the events", etc., set scope to "all".
+  - If the user names specific events or days (e.g., "Tuesday and Thursday", "soccer and
+    the birthday party"), set scope to "specific" and populate the assignments list.
+  - Otherwise, set scope to "single" and populate one entry in assignments.
+- For scope="all", leave the assignments list empty — all events needing transport will
+  be assigned automatically.
+- For scope="specific" or "single", populate the assignments list with child_name and
+  event_hint for each event mentioned.
 - If the recent conversation discusses a specific event (e.g., user asked about "Wed morning
   soccer" and the bot replied about "Soccer practice on Wednesday"), you MUST set event_hint
   to that event name (e.g., "soccer practice"). Do this even if the current message just says
@@ -92,12 +104,23 @@ IMPORTANT:
 """
 
 RELEASE_EXTRACTION_SYSTEM = """\
-You are extracting a transport release from a parent's message.
-The parent is saying they can't cover a drop-off or pick-up they were assigned to.
+You are extracting transport release(s) from a parent's message.
+The parent is saying they can't cover drop-off or pick-up they were assigned to.
 
 Family children: {children_names}
 Upcoming events with transport assigned:
 {upcoming_events}
+
+IMPORTANT:
+- Determine the SCOPE of the release:
+  - If the user says "all of them", "I can't do any", "release everything",
+    "I can't do any this week", etc., set scope to "all".
+  - If the user names specific events or days (e.g., "Tuesday and Thursday"),
+    set scope to "specific" and populate the releases list.
+  - Otherwise, set scope to "single" and populate one entry in releases.
+- For scope="all", leave the releases list empty — all assigned events are released.
+- For scope="specific" or "single", populate the releases list with child_name and
+  event_hint for each event mentioned.
 """
 
 
@@ -445,13 +468,160 @@ async def handle_correction(
     return response
 
 
+async def _apply_single_assignment(
+    session: AsyncSession,
+    family_id: UUID,
+    target_event: Event,
+    role: str,
+    assignee_id: UUID,
+    child_name: str,
+    sender_id: UUID,
+    caregivers: list,
+) -> tuple[str, str]:
+    """Apply transport assignment to a single event.
+
+    Returns (confirmation_line, notification_line).
+    """
+    update_kwargs: dict = {}
+    if role in ("drop_off", "both"):
+        update_kwargs["drop_off_by"] = assignee_id
+    if role in ("pick_up", "both"):
+        update_kwargs["pick_up_by"] = assignee_id
+
+    if update_kwargs:
+        await events_dal.update_event(
+            session, family_id, target_event.id, **update_kwargs
+        )
+        for k, v in update_kwargs.items():
+            setattr(target_event, k, v)
+
+    role_text = _role_label(role)
+    time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
+
+    confirm = (
+        f"• {role_text} for {child_name} at "
+        f"\"{target_event.title}\" on {time_str}"
+    )
+    notify = (
+        f"• {child_name} — \"{target_event.title}\" on {time_str}"
+    )
+
+    # Track claim for routine inference
+    try:
+        for role_key in ("drop_off", "pick_up"):
+            if role_key in update_kwargs:
+                await track_transport_claim(
+                    session, family_id, sender_id, target_event, role_key,
+                    caregivers=caregivers,
+                )
+    except Exception:
+        logger.debug("Could not track transport claim for routine inference", exc_info=True)
+
+    # Check off transport prep item
+    if target_event.drop_off_by and target_event.pick_up_by and target_event.description:
+        updated_desc = target_event.description.replace(
+            "☐ Arrange drop-off/pick-up", "☑ Arrange drop-off/pick-up"
+        )
+        if updated_desc != target_event.description:
+            target_event.description = updated_desc
+            await events_dal.update_event(
+                session, family_id, target_event.id, description=updated_desc
+            )
+
+    # Enqueue GCal update
+    try:
+        from src.state import outbox as outbox_dal
+
+        await outbox_dal.enqueue_gcal_write(
+            session, family_id, target_event.id, GcalOutboxOperation.update, {},
+            idempotency_key=f"update:{target_event.id}:{uuid4().hex[:12]}",
+        )
+    except Exception as exc:
+        logger.debug("Could not enqueue transport GCal sync: %s", exc)
+
+    return confirm, notify
+
+
+async def _resolve_target_event(
+    session: AsyncSession,
+    family_id: UUID,
+    assignment: ExtractedAssignment,
+    events_needing_transport: list[Event],
+    all_upcoming: list[Event],
+) -> Event | None:
+    """Find the target event for a single extracted assignment."""
+    child = await children_dal.fuzzy_match_child(
+        session, family_id, assignment.child_name
+    )
+
+    # Filter to events linked to this child
+    child_events = []
+    if child:
+        child_events = [
+            ev for ev in events_needing_transport
+            if ev.children and any(ec.child_id == child.id for ec in ev.children)
+        ]
+
+    candidates = child_events or events_needing_transport
+
+    # Date hint filtering
+    if assignment.date_hint and isinstance(assignment.date_hint, str):
+        date_filtered = _filter_events_by_date_hint(candidates, assignment.date_hint)
+        if date_filtered:
+            candidates = date_filtered
+        else:
+            all_date_filtered = _filter_events_by_date_hint(all_upcoming, assignment.date_hint)
+            if all_date_filtered:
+                candidates = all_date_filtered
+
+    # Event hint matching
+    target_event = None
+    if assignment.event_hint:
+        target_event = await _find_target_event(
+            session, family_id, assignment.event_hint, candidates,
+        )
+
+    if not target_event and candidates:
+        target_event = candidates[0]
+
+    return target_event
+
+
+def _resolve_assignee(
+    assigned_caregiver: str | None,
+    sender_id: UUID,
+    caregivers: list,
+) -> UUID:
+    """Resolve which caregiver is being assigned."""
+    if assigned_caregiver:
+        named = assigned_caregiver.lower().strip()
+        for cg in caregivers:
+            if cg.name and cg.name.lower() == named:
+                return cg.id
+    return sender_id
+
+
+def _get_child_name_for_event(
+    event: Event,
+    child_id_to_name: dict[UUID, str],
+    fallback: str = "your child",
+) -> str:
+    """Get the child name associated with an event via child_id lookup."""
+    if event.children:
+        for ec in event.children:
+            name = child_id_to_name.get(ec.child_id)
+            if name:
+                return name
+    return fallback
+
+
 async def handle_assignment_claim(
     session: AsyncSession,
     family_id: UUID,
     message: str,
     sender_id: UUID,
 ) -> tuple[str, list[str]]:
-    """Handle a transport assignment claim like 'I'll take Jake'.
+    """Handle a transport assignment claim — supports single or bulk.
 
     Returns (response_for_claimer, [notifications_for_others]).
     """
@@ -483,172 +653,136 @@ async def handle_assignment_claim(
     extracted = await extract(
         prompt=message,
         system=system,
-        schema=ExtractedAssignment,
+        schema=ExtractedBulkAssignment,
     )
-
-    # Resolve child
-    child = await children_dal.fuzzy_match_child(
-        session, family_id, extracted.child_name
-    )
-    if not child:
-        return (
-            f"I'm not sure which child you mean by \"{extracted.child_name}\". "
-            f"Your children are: {', '.join(ctx['children_names'])}.",
-            [],
-        )
 
     # Refresh children relationships that may have expired after LLM + DB calls
     for ev in ctx["upcoming"]:
         try:
             await session.refresh(ev, ["children"])
         except Exception:
-            pass  # stale event — skip it in filtering below
+            pass
 
-    # Filter to events linked to this child
-    child_events = [
-        ev for ev in events_needing_transport
-        if ev.children and any(ec.child_id == child.id for ec in ev.children)
-    ]
+    # Build child_id → name map for resolving child names from EventChild records
+    all_children = await children_dal.get_children_for_family(session, family_id)
+    child_id_to_name: dict[UUID, str] = {c.id: c.name for c in all_children}
+    fallback_child = ctx["children_names"][0] if ctx["children_names"] else "your child"
 
-    # Find the target event (if hinted) or the next event for that child
-    target_event = None
-    candidates = child_events or events_needing_transport
+    assignee_id = _resolve_assignee(
+        extracted.assigned_caregiver, sender_id, ctx["caregivers"]
+    )
+    assignee_name = _caregiver_display_name(ctx["caregivers"], assignee_id)
+    role = extracted.role
 
-    # If there's a date hint, filter candidates to matching dates first
-    if extracted.date_hint and isinstance(extracted.date_hint, str):
-        date_filtered = _filter_events_by_date_hint(candidates, extracted.date_hint)
-        if date_filtered:
-            candidates = date_filtered
+    # ── Determine target events based on scope ──
+    target_events: list[tuple[Event, str]] = []  # (event, child_name)
+
+    if extracted.scope == "all":
+        # Assign all events needing transport
+        for ev in events_needing_transport:
+            child_name = _get_child_name_for_event(ev, child_id_to_name, fallback_child)
+            target_events.append((ev, child_name))
+
+    elif extracted.scope == "specific" and extracted.assignments:
+        # Assign specific named events
+        for assignment in extracted.assignments:
+            target = await _resolve_target_event(
+                session, family_id, assignment,
+                events_needing_transport, ctx["upcoming"],
+            )
+            if target:
+                child_name = _get_child_name_for_event(target, child_id_to_name, fallback_child)
+                target_events.append((target, child_name))
+
+    else:
+        # Single event (backward-compatible)
+        if extracted.assignments:
+            assignment = extracted.assignments[0]
         else:
-            # Date didn't match any events needing transport — the event may
-            # already have transport assigned (reassignment case). Search ALL
-            # upcoming events so we can still match and reassign.
-            all_upcoming = ctx["upcoming"]
-            all_date_filtered = _filter_events_by_date_hint(all_upcoming, extracted.date_hint)
-            if all_date_filtered:
-                candidates = all_date_filtered
+            # Fallback: extract didn't populate assignments — use first event
+            if events_needing_transport:
+                ev = events_needing_transport[0]
+                child_name = _get_child_name_for_event(ev, child_id_to_name, fallback_child)
+                target_events.append((ev, child_name))
+            assignment = None
 
-    if extracted.event_hint:
-        target_event = await _find_target_event(
-            session, family_id, extracted.event_hint,
-            candidates,
-        )
+        if assignment and not target_events:
+            target = await _resolve_target_event(
+                session, family_id, assignment,
+                events_needing_transport, ctx["upcoming"],
+            )
+            if target:
+                child_name = _get_child_name_for_event(target, child_id_to_name, fallback_child)
+                target_events.append((target, child_name))
 
-    if not target_event and candidates:
-        target_event = candidates[0]
-
-    if not target_event:
-        # Fall back to any event needing transport
-        if events_needing_transport:
-            target_event = events_needing_transport[0]
-
-    if not target_event:
+    if not target_events:
         return ("I couldn't find an upcoming event that needs transport assignment.", [])
 
-    # Resolve which caregiver is being assigned
-    assignee_id = sender_id  # default: sender volunteers themselves
-    if extracted.assigned_caregiver:
-        # Look up the named caregiver
-        named = extracted.assigned_caregiver.lower().strip()
-        for cg in ctx["caregivers"]:
-            if cg.name and cg.name.lower() == named:
-                assignee_id = cg.id
-                break
+    # ── Apply assignments ──
+    confirm_lines: list[str] = []
+    notify_lines: list[str] = []
+    assigned_event_ids: set[UUID] = set()
 
-    # Apply assignment
-    update_kwargs = {}
-    assignee_name = _caregiver_display_name(ctx["caregivers"], assignee_id)
-
-    if extracted.role in ("drop_off", "both"):
-        update_kwargs["drop_off_by"] = assignee_id
-    if extracted.role in ("pick_up", "both"):
-        update_kwargs["pick_up_by"] = assignee_id
-
-    if update_kwargs:
-        await events_dal.update_event(
-            session, family_id, target_event.id, **update_kwargs
+    for ev, child_name in target_events:
+        confirm, notify = await _apply_single_assignment(
+            session, family_id, ev, role, assignee_id,
+            child_name, sender_id, ctx["caregivers"],
         )
-        # Refresh event fields for conflict check
-        for k, v in update_kwargs.items():
-            setattr(target_event, k, v)
+        confirm_lines.append(confirm)
+        notify_lines.append(notify)
+        assigned_event_ids.add(ev.id)
 
-    role_text = _role_label(extracted.role)
+    # Batch conflict check across all assigned events
+    all_conflicts: list = []
+    for ev, _child_name in target_events:
+        conflicts = await check_all_transport_conflicts(
+            session, family_id, ev, caregiver_filter=assignee_id
+        )
+        all_conflicts.extend(conflicts)
 
-    time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
-    response = (
-        f"✓ {assignee_name or 'You'} — {role_text} "
-        f"for {child.name} at \"{target_event.title}\" on {time_str}."
-    )
+    # ── Build response ──
+    if len(confirm_lines) == 1:
+        response = f"✓ {assignee_name or 'You'} — {confirm_lines[0].lstrip('• ')}"
+    else:
+        response = f"✓ {assignee_name or 'You'} — transport assigned for {len(confirm_lines)} events:\n"
+        response += "\n".join(confirm_lines)
 
-    # Show what's still unassigned
-    remaining = []
-    if not target_event.drop_off_by:
-        remaining.append("drop-off")
-    if not target_event.pick_up_by:
-        remaining.append("pick-up")
-    remaining_text = ""
-    if remaining:
-        remaining_text = f" {' and '.join(remaining).capitalize()} is still unassigned."
-        response += remaining_text
+    # Show remaining unassigned across events
+    still_need = [
+        ev for ev in events_needing_transport
+        if ev.id not in assigned_event_ids
+        and (not ev.drop_off_by or not ev.pick_up_by)
+    ]
+    if still_need:
+        response += f"\n\n{len(still_need)} event(s) still need transport."
 
-    # Build notification for other caregivers
-    notification = (
-        f"{assignee_name or 'A caregiver'} is handling {role_text} "
-        f"for {child.name} at \"{target_event.title}\" on {time_str}."
-    )
-    if remaining_text:
-        notification += remaining_text
+    # Conflict warnings
+    if all_conflicts:
+        response += "\n\n⚠️ Heads up:"
+        for c in all_conflicts:
+            response += f"\n• {c.description}"
 
-    # Sibling conflict check
-    all_conflicts = await check_all_transport_conflicts(
-        session, family_id, target_event, caregiver_filter=assignee_id
-    )
+    # Build consolidated notification
+    role_text = _role_label(role)
+    if len(notify_lines) == 1:
+        notification = (
+            f"{assignee_name or 'A caregiver'} is handling {role_text} "
+            f"for {notify_lines[0].lstrip('• ')}."
+        )
+    else:
+        notification = (
+            f"{assignee_name or 'A caregiver'} is handling {role_text} "
+            f"for {len(notify_lines)} events:\n"
+        )
+        notification += "\n".join(notify_lines)
 
-    conflict_text = ""
     if all_conflicts:
         conflict_text = "\n\n⚠️ Heads up:"
         for c in all_conflicts:
             conflict_text += f"\n• {c.description}"
-        response += conflict_text
-        notification += conflict_text  # Conflicts go to ALL caregivers
+        notification += conflict_text
 
-    notifications = [notification]
-
-    # Track claim for routine inference
-    try:
-        for role_key in ("drop_off", "pick_up"):
-            if role_key in update_kwargs:
-                await track_transport_claim(
-                    session, family_id, sender_id, target_event, role_key,
-                    caregivers=ctx["caregivers"],
-                )
-    except Exception:
-        logger.debug("Could not track transport claim for routine inference", exc_info=True)
-
-    # Check off transport prep item if both drop-off and pick-up are now assigned
-    if target_event.drop_off_by and target_event.pick_up_by and target_event.description:
-        updated_desc = target_event.description.replace(
-            "☐ Arrange drop-off/pick-up", "☑ Arrange drop-off/pick-up"
-        )
-        if updated_desc != target_event.description:
-            target_event.description = updated_desc
-            await events_dal.update_event(
-                session, family_id, target_event.id, description=updated_desc
-            )
-
-    # Enqueue GCal update via outbox (includes transport section in description)
-    try:
-        from uuid import uuid4
-        from src.state import outbox as outbox_dal
-
-        await outbox_dal.enqueue_gcal_write(
-            session, family_id, target_event.id, GcalOutboxOperation.update, {},
-            idempotency_key=f"update:{target_event.id}:{uuid4().hex[:12]}",
-        )
-    except Exception as exc:
-        logger.debug("Could not enqueue transport GCal sync: %s", exc)
-
-    return response, notifications
+    return response, [notification]
 
 
 async def detect_conflicts(
@@ -992,13 +1126,77 @@ def format_transport_status(
     return ", ".join(parts)
 
 
+async def _apply_single_release(
+    session: AsyncSession,
+    family_id: UUID,
+    target_event: Event,
+    role: str,
+    sender_id: UUID,
+) -> tuple[str, str] | None:
+    """Release transport for a single event.
+
+    Returns (confirmation_line, notification_line) or None if sender not assigned.
+    """
+    update_kwargs: dict = {}
+    released_roles: list[str] = []
+
+    if role in ("drop_off", "both") and target_event.drop_off_by == sender_id:
+        update_kwargs["drop_off_by"] = None
+        released_roles.append("drop-off")
+    if role in ("pick_up", "both") and target_event.pick_up_by == sender_id:
+        update_kwargs["pick_up_by"] = None
+        released_roles.append("pick-up")
+
+    if not update_kwargs:
+        return None
+
+    await events_dal.update_event(
+        session, family_id, target_event.id, **update_kwargs
+    )
+
+    role_text = " and ".join(released_roles)
+    time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
+
+    confirm = f"• {role_text} for \"{target_event.title}\" on {time_str}"
+    notify = f"• {role_text.capitalize()} for \"{target_event.title}\" on {time_str}"
+
+    return confirm, notify
+
+
+async def _resolve_release_target(
+    session: AsyncSession,
+    family_id: UUID,
+    release: ExtractedRelease,
+    assigned_events: list[Event],
+) -> Event | None:
+    """Find the target event for a single extracted release."""
+    if release.event_hint:
+        target = await _find_target_event(
+            session, family_id, release.event_hint, assigned_events
+        )
+        if target:
+            return target
+
+    if release.child_name:
+        child = await children_dal.fuzzy_match_child(
+            session, family_id, release.child_name
+        )
+        if child:
+            for ev in assigned_events:
+                child_ids = {ec.child_id for ec in ev.children} if ev.children else set()
+                if child.id in child_ids:
+                    return ev
+
+    return assigned_events[0] if assigned_events else None
+
+
 async def handle_transport_release(
     session: AsyncSession,
     family_id: UUID,
     message: str,
     sender_id: UUID,
 ) -> tuple[str, list[str]]:
-    """Handle a transport release like 'I can't do pickup Thursday'.
+    """Handle a transport release — supports single or bulk.
 
     Returns (confirmation_message, [notification_messages_for_other_caregivers]).
     """
@@ -1026,72 +1224,72 @@ async def handle_transport_release(
     extracted = await extract(
         prompt=message,
         system=system,
-        schema=ExtractedRelease,
+        schema=ExtractedBulkRelease,
     )
 
-    # Find the target event
-    target_event = None
-    if extracted.event_hint:
-        target_event = await _find_target_event(
-            session, family_id, extracted.event_hint, assigned_events
-        )
+    role = extracted.role
 
-    if not target_event:
-        # Try matching by child name + role
-        if extracted.child_name:
-            child = await children_dal.fuzzy_match_child(
-                session, family_id, extracted.child_name
+    # ── Determine target events based on scope ──
+    target_events: list[Event] = []
+
+    if extracted.scope == "all":
+        target_events = assigned_events
+
+    elif extracted.scope == "specific" and extracted.releases:
+        for release in extracted.releases:
+            target = await _resolve_release_target(
+                session, family_id, release, assigned_events,
             )
-            if child:
-                for ev in assigned_events:
-                    child_ids = {ec.child_id for ec in ev.children} if ev.children else set()
-                    if child.id in child_ids:
-                        target_event = ev
-                        break
+            if target and target not in target_events:
+                target_events.append(target)
 
-    if not target_event:
-        # Fall back to first assigned event
-        target_event = assigned_events[0] if assigned_events else None
+    else:
+        # Single release
+        if extracted.releases:
+            target = await _resolve_release_target(
+                session, family_id, extracted.releases[0], assigned_events,
+            )
+            if target:
+                target_events.append(target)
+        elif assigned_events:
+            target_events.append(assigned_events[0])
 
-    if not target_event:
+    if not target_events:
         return ("I couldn't find a matching transport assignment to release.", [])
 
-    # Verify sender actually holds the assignment for the requested role
-    update_kwargs = {}
-    released_roles = []
+    # ── Apply releases ──
+    confirm_lines: list[str] = []
+    notify_lines: list[str] = []
 
-    if extracted.role in ("drop_off", "both") and target_event.drop_off_by == sender_id:
-        update_kwargs["drop_off_by"] = None
-        released_roles.append("drop-off")
-    if extracted.role in ("pick_up", "both") and target_event.pick_up_by == sender_id:
-        update_kwargs["pick_up_by"] = None
-        released_roles.append("pick-up")
+    for ev in target_events:
+        result = await _apply_single_release(
+            session, family_id, ev, role, sender_id,
+        )
+        if result:
+            confirm, notify = result
+            confirm_lines.append(confirm)
+            notify_lines.append(notify)
 
-    if not update_kwargs:
+    if not confirm_lines:
         return (
-            "You don't appear to be assigned to that role for this event.",
+            "You don't appear to be assigned to that role for these events.",
             [],
         )
 
-    await events_dal.update_event(
-        session, family_id, target_event.id, **update_kwargs
-    )
+    # ── Build response ──
+    if len(confirm_lines) == 1:
+        confirmation = f"Got it — {confirm_lines[0].lstrip('• ')} is now unassigned."
+    else:
+        confirmation = f"Got it — released transport for {len(confirm_lines)} events:\n"
+        confirmation += "\n".join(confirm_lines)
 
-    sender_name = _caregiver_display_name(ctx["caregivers"], sender_id)
-
-    role_text = " and ".join(released_roles)
-    time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
-
-    confirmation = (
-        f"Got it — {role_text} for \"{target_event.title}\" on {time_str} "
-        f"is now unassigned."
-    )
-
-    # Build notification for other caregivers
-    notification = (
-        f"{role_text.capitalize()} for \"{target_event.title}\" on {time_str} "
-        f"needs someone. Who can cover?"
-    )
+    # Build notification
+    if len(notify_lines) == 1:
+        notification = f"{notify_lines[0].lstrip('• ')} needs someone. Who can cover?"
+    else:
+        notification = f"Transport needs coverage for {len(notify_lines)} events:\n"
+        notification += "\n".join(notify_lines)
+        notification += "\nWho can cover?"
 
     return (confirmation, [notification])
 
