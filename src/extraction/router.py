@@ -1401,6 +1401,7 @@ async def _cancel_single_event(
         try:
             await events_dal.update_event(
                 session, family_id, local_ev.id,
+                cancelled_at=datetime.now(UTC),
                 description=(local_ev.description or "") + "\n[CANCELLED]",
             )
             logger.info("Soft-deleted local event '%s'", local_ev.title)

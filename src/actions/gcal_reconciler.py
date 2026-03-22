@@ -106,9 +106,8 @@ async def reconcile_family(
     # Case 1: Local event has gcal_id but GCal event is gone → soft-delete
     for gcal_id, local_ev in local_by_gcal_id.items():
         if gcal_id not in gcal_by_id:
-            desc = local_ev.description or ""
-            if "[CANCELLED]" not in desc:
-                local_ev.description = desc + "\n[CANCELLED]"
+            if not local_ev.cancelled_at:
+                local_ev.cancelled_at = datetime.now(UTC)
                 stats["cancelled"] += 1
                 logger.info(
                     "Soft-deleted local event %s (GCal %s no longer exists)",
