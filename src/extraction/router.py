@@ -1021,8 +1021,11 @@ async def _handle_query_schedule(
     events = await events_dal.get_upcoming_events(
         session, family_id, days=days, family_timezone=family_tz
     )
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(family_tz)
     for ev in events:
-        dt_str = ev.datetime_start.strftime("%a %b %d, %I:%M %p")
+        local_start = ev.datetime_start.astimezone(tz) if ev.datetime_start else None
+        dt_str = local_start.strftime("%a %b %d, %I:%M %p") if local_start else "TBD"
         line = f"- {ev.title} — {dt_str}"
         if ev.location:
             line += f" @ {ev.location}"
