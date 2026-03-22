@@ -1096,17 +1096,14 @@ async def _handle_query_schedule(
         line = f"- {ev.title} — {dt_str}"
         if ev.location:
             line += f" @ {ev.location}"
-        # Include transport status if event has children linked
-        if ev.children:
+        # Include transport status
+        if ev.drop_off_by or ev.pick_up_by:
             transport_parts = []
             if ev.drop_off_by:
                 transport_parts.append(f"drop-off: {caregiver_map.get(ev.drop_off_by, 'someone')}")
             if ev.pick_up_by:
                 transport_parts.append(f"pick-up: {caregiver_map.get(ev.pick_up_by, 'someone')}")
-            if transport_parts:
-                line += f" (🚗 {', '.join(transport_parts)})"
-            else:
-                line += " (🚗 transport not assigned)"
+            line += f" (🚗 {', '.join(transport_parts)})"
         event_lines.append(line)
 
     # Fallback to GCal if local DB has no events
