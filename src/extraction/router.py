@@ -60,6 +60,57 @@ APPROVAL_KEYWORDS = {
 }
 
 
+SPLIT_SYSTEM_PROMPT = """\
+You are a message splitter for a family calendar assistant.
+
+Given a message that may contain multiple requests or pieces of information, split it
+into separate, self-contained statements. Each statement should express one intent.
+
+Rules:
+- If the message has only one intent, return it as-is in a single-element list.
+- Each split statement must be self-contained (include enough context to understand it
+  on its own, without the other statements).
+- Preserve names, dates, event references, and caregiver names in each statement.
+- Do NOT reword — keep the user's original phrasing as much as possible.
+- Do NOT split a single thought across multiple statements.
+
+Return JSON only: {"statements": ["statement1", "statement2", ...]}
+"""
+
+
+async def split_compound_message(message: str) -> list[str]:
+    """Split a compound message into single-intent statements.
+
+    Returns a list of 1+ statements. Simple messages return [message] without
+    an LLM call.
+    """
+    # Short messages are almost always single-intent — skip LLM call
+    if len(message) < 60:
+        return [message]
+
+    # Heuristic: count sentence boundaries and conjunctions
+    clause_signals = message.count(". ") + message.count(" and ") + message.count("; ")
+    if clause_signals < 1:
+        return [message]
+
+    try:
+        raw = await classify(message, SPLIT_SYSTEM_PROMPT)
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+        data = json.loads(text)
+        statements = data.get("statements", [message])
+        if not statements or not isinstance(statements, list):
+            return [message]
+        # Filter out empty strings
+        statements = [s.strip() for s in statements if s and s.strip()]
+        return statements if statements else [message]
+    except (json.JSONDecodeError, KeyError, Exception):
+        logger.debug("Could not split compound message, using original", exc_info=True)
+        return [message]
+
+
 async def classify_intent(
     session: AsyncSession,
     family_id: UUID,

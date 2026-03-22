@@ -7,7 +7,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.extraction.router import classify_intent, route_intent
+from src.extraction.router import classify_intent, route_intent, split_compound_message
 from src.ingestion.ics import is_ics_file
 from src.state import families as families_dal
 from src.state import memory as memory_dal
@@ -105,42 +105,53 @@ async def handle_whatsapp_message(
         expires_at=datetime.now(UTC) + timedelta(hours=24),
     )
 
-    # Classify intent and route
-    intent = await classify_intent(
-        session,
-        family_id=family.id,
-        message=message_text,
-        sender_id=caregiver.id,
-        button_reply_id=button_reply_id,
-    )
+    # Split compound messages into single-intent statements
+    statements = await split_compound_message(message_text)
 
-    logger.info(
-        "Classified intent: %s (confidence=%.2f) for family %s",
-        intent.intent,
-        intent.confidence,
-        family.id,
-    )
+    responses: list[str] = []
+    for statement in statements:
+        intent = await classify_intent(
+            session,
+            family_id=family.id,
+            message=statement,
+            sender_id=caregiver.id,
+            button_reply_id=button_reply_id,
+        )
+        # Only use button_reply_id for the first statement
+        button_reply_id = None
 
-    response = await route_intent(
-        session,
-        family_id=family.id,
-        intent=intent,
-        message=message_text,
-        sender_id=caregiver.id,
-    )
+        logger.info(
+            "Classified intent: %s (confidence=%.2f) for family %s [statement: %s]",
+            intent.intent,
+            intent.confidence,
+            family.id,
+            statement[:80],
+        )
+
+        response = await route_intent(
+            session,
+            family_id=family.id,
+            intent=intent,
+            message=statement,
+            sender_id=caregiver.id,
+        )
+        if response:
+            responses.append(response)
+
+    combined_response = "\n\n".join(responses) if responses else None
 
     # Store bot response in memory too
-    if response:
+    if combined_response:
         await memory_dal.store_message(
             session,
             family_id=family.id,
-            content=f"Radar: {response}",
+            content=f"Radar: {combined_response}",
             msg_type="short_term",
             expires_at=datetime.now(UTC) + timedelta(hours=24),
         )
 
     await session.commit()
-    return response
+    return combined_response
 
 
 def _extract_message_from_payload(payload: dict) -> dict | None:
