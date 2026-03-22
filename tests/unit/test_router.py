@@ -10,6 +10,7 @@ from src.extraction.router import (
     _parse_classification_response,
     classify_intent,
     route_intent,
+    split_compound_message,
 )
 from src.extraction.schemas import IntentResult, IntentType
 
@@ -460,3 +461,102 @@ class TestRouteIntent:
         assert "Emma" in system_prompt
         assert "Caregivers" in system_prompt
         assert "Emma" in response
+
+
+# ── Tests for split_compound_message ─────────────────────────────────
+
+
+class TestSplitCompoundMessage:
+    @pytest.mark.asyncio
+    async def test_short_message_skips_llm(self):
+        """Short messages return as-is without LLM call."""
+        result = await split_compound_message("What's this week look like?")
+        assert result == ["What's this week look like?"]
+
+    @pytest.mark.asyncio
+    async def test_single_sentence_skips_llm(self):
+        """Single sentence with no conjunctions skips LLM."""
+        result = await split_compound_message(
+            "I'll pick up Emma from soccer practice on Thursday"
+        )
+        assert result == ["I'll pick up Emma from soccer practice on Thursday"]
+
+    @pytest.mark.asyncio
+    async def test_compound_message_splits(self):
+        """Compound message with multiple intents gets split by LLM."""
+        llm_response = json.dumps({
+            "statements": [
+                "blue jays game is at the blue jays stadium",
+                "Anna will handle soccer and science fair",
+            ]
+        })
+
+        with patch("src.extraction.router.classify", new_callable=AsyncMock,
+                    return_value=llm_response):
+            result = await split_compound_message(
+                "blue jays game is at the blue jays stadium. "
+                "Anna will handle soccer and science fair"
+            )
+
+        assert len(result) == 2
+        assert "blue jays" in result[0]
+        assert "Anna" in result[1]
+
+    @pytest.mark.asyncio
+    async def test_llm_returns_single_statement(self):
+        """LLM may determine the message is single-intent."""
+        llm_response = json.dumps({
+            "statements": ["I'll take Emma to soccer practice on Saturday morning"]
+        })
+
+        with patch("src.extraction.router.classify", new_callable=AsyncMock,
+                    return_value=llm_response):
+            result = await split_compound_message(
+                "I'll take Emma to soccer practice on Saturday morning at the fields"
+            )
+
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_returns_original(self):
+        """If LLM call fails, return original message."""
+        with patch("src.extraction.router.classify", new_callable=AsyncMock,
+                    side_effect=Exception("LLM error")):
+            result = await split_compound_message(
+                "blue jays game is at the stadium. Anna will handle soccer"
+            )
+
+        assert len(result) == 1
+        assert "blue jays" in result[0]
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_returns_original(self):
+        """If LLM returns malformed JSON, return original message."""
+        with patch("src.extraction.router.classify", new_callable=AsyncMock,
+                    return_value="not json at all"):
+            result = await split_compound_message(
+                "update the location for soccer. and cancel the piano lesson"
+            )
+
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_three_way_split(self):
+        """Message with three intents splits into three statements."""
+        llm_response = json.dumps({
+            "statements": [
+                "blue jays game is at the blue jays stadium",
+                "I'm going to the birthday party so no need for transport there",
+                "Anna will handle soccer and science fair",
+            ]
+        })
+
+        with patch("src.extraction.router.classify", new_callable=AsyncMock,
+                    return_value=llm_response):
+            result = await split_compound_message(
+                "blue jays game is at the blue jays stadium. "
+                "I'm going to the birthday party so no need for transport there "
+                "and Anna will handle soccer and science fair"
+            )
+
+        assert len(result) == 3
