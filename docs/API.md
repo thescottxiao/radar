@@ -13,27 +13,30 @@ These endpoints receive inbound data from external services. All must return 200
 
 ### POST `/webhooks/whatsapp`
 
-Receives inbound WhatsApp messages from Twilio/Meta Cloud API.
+Receives inbound WhatsApp messages from Meta Cloud API.
 
 **Headers:**
-- `X-Twilio-Signature` or Meta webhook verification signature
+- `X-Hub-Signature-256`: Meta webhook verification signature
 
-**Payload (Twilio format):**
+**Payload (text message):**
 ```json
 {
-  "From": "whatsapp:+15551234567",
-  "To": "whatsapp:+15559876543",
-  "Body": "What's on Saturday?",
-  "NumMedia": "0",
-  "MediaContentType0": "audio/ogg",
-  "MediaUrl0": "https://...",
-  "WaId": "15551234567",
-  "ProfileName": "Sarah",
-  "GroupId": "group_abc123"
+  "entry": [{
+    "changes": [{
+      "value": {
+        "contacts": [{"wa_id": "15551234567", "profile": {"name": "Sarah"}}],
+        "messages": [{
+          "from": "15551234567",
+          "type": "text",
+          "text": {"body": "What's on Saturday?"}
+        }]
+      }
+    }]
+  }]
 }
 ```
 
-**Meta Cloud API payload (interactive button reply):**
+**Payload (interactive button reply):**
 ```json
 {
   "entry": [{
@@ -57,19 +60,18 @@ Receives inbound WhatsApp messages from Twilio/Meta Cloud API.
 ```
 
 **Behavior:**
-1. Verify webhook signature (skip if `WHATSAPP_WEBHOOK_SECRET` is unset for local dev).
-2. Look up family by `GroupId` → `whatsapp_group_id`.
-3. Look up caregiver by `From` phone number.
-4. If message type is `interactive` with `button_reply` → extract `button_reply.id` and pass to Intent Router for direct routing (no LLM classification, confidence=1.0).
-5. If `NumMedia > 0` and media is audio → queue for Whisper transcription → then process as text.
-6. Queue message for Intent Router processing.
-7. Return `200 OK` immediately.
+1. Verify webhook signature via `X-Hub-Signature-256` (skip if `WHATSAPP_WEBHOOK_SECRET` is unset for local dev).
+2. Extract sender phone from payload and look up caregiver.
+3. If message type is `interactive` with `button_reply` → extract `button_reply.id` and pass to Intent Router for direct routing (no LLM classification, confidence=1.0).
+4. If message type is `document` with `.ics` extension → process as ICS attachment.
+5. Queue message for Intent Router processing.
+6. Return `200 OK` immediately.
 
-**Response:** `200 OK` (empty body)
+**Response:** `{"status": "ok"}`
 
 ---
 
-### GET `/webhooks/whatsapp/verify`
+### GET `/webhooks/whatsapp`
 
 WhatsApp webhook verification (Meta Cloud API setup).
 
@@ -146,6 +148,8 @@ Receives Google Calendar push notifications.
 
 ### POST `/webhooks/forward-email`
 
+> **Status: Planned — route not yet wired.** The handler logic exists at `src/ingestion/forward.py` but no API route is registered in `src/api/webhooks.py`.
+
 Receives forwarded emails at `family-{id}@radar.app`. Handled by an inbound email service (SendGrid Inbound Parse, Mailgun, or AWS SES).
 
 **Payload (SendGrid format):**
@@ -211,6 +215,8 @@ Handles Google OAuth redirect.
 Radar sends external emails from its own domain, not from caregiver Gmail accounts.
 
 ### POST `/internal/email/send`
+
+> **Status: Planned — not yet implemented.**
 
 Triggered when a caregiver approves an external email (RSVP, playdate message, coach email).
 
@@ -280,6 +286,8 @@ Triggered by Cloud Scheduler every 24 hours.
 
 ### POST `/internal/ics/poll`
 
+> **Status: Planned — not yet implemented.** The ICS polling logic exists at `src/ingestion/ics.py` but no scheduler route is registered.
+
 Triggered by Cloud Scheduler every 30 minutes.
 
 **Behavior:**
@@ -291,12 +299,48 @@ Triggered by Cloud Scheduler every 30 minutes.
 
 ### POST `/internal/gaps/detect`
 
+> **Status: Planned — not yet implemented (Phase 3).**
+
 Triggered as part of the daily digest evaluation.
 
 **Behavior:**
 1. For each family, run gap detection rules (SPEC Section 12).
 2. Generate suggestions for detected gaps.
 3. Include in daily digest or send as immediate trigger if urgent.
+
+### POST `/internal/test/simulate-email`
+
+**DEV ONLY.** Simulates an incoming email through the full extraction pipeline without requiring Gmail integration.
+
+**Payload:**
+```json
+{
+  "family_id": "uuid (defaults to test family)",
+  "from_address": "coach@example.com",
+  "subject": "Soccer Tournament This Saturday",
+  "body": "..."
+}
+```
+
+**Behavior:**
+1. Run email through two-tier extraction (Haiku triage → Sonnet extraction).
+2. Auto-persist action items and learnings.
+3. For each extracted event: create `PendingAction` and send WhatsApp buttons.
+4. If only action items (no events): send plain text WhatsApp summary.
+
+**Response:**
+```json
+{
+  "status": "processed",
+  "is_relevant": true,
+  "events_pending_confirmation": 1,
+  "action_items": 2,
+  "learnings": 0,
+  "summary": "..."
+}
+```
+
+---
 
 ### POST `/internal/reconcile`
 

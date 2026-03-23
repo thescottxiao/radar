@@ -37,7 +37,7 @@ Shared state: PostgreSQL with row-level tenant isolation (`family_id` on every t
 - **Database:** PostgreSQL + pgvector
 - **LLM:** Claude API (Haiku for triage, Sonnet for reasoning/extraction)
 - **Message queue:** Google Pub/Sub
-- **WhatsApp:** Twilio or Meta Cloud API
+- **WhatsApp:** Meta Cloud API
 - **Voice:** Whisper API
 - **Hosting:** GCP Cloud Run
 - **Testing:** pytest + pytest-asyncio
@@ -46,27 +46,35 @@ Shared state: PostgreSQL with row-level tenant isolation (`family_id` on every t
 
 ```
 src/
+├── config.py         # Environment/settings configuration
+├── db.py             # SQLAlchemy async session factory, tenant isolation
+├── llm.py            # LLM client wrapper (Haiku/Sonnet, tool_use extraction)
+├── whatsapp_client.py # Meta Cloud API client (send, verify, templates)
 ├── ingestion/        # Webhook handlers, Pub/Sub consumers, ICS polling
 │   ├── gmail.py      # Gmail push notification handler
 │   ├── gcal.py       # GCal webhook handler
-│   ├── whatsapp.py   # WhatsApp message handler (text + voice)
+│   ├── whatsapp.py   # WhatsApp message handler (text + buttons + documents)
 │   ├── forward.py    # Forward-to email inbound handler
-│   └── ics.py        # ICS feed poller and differ
+│   ├── ics.py        # ICS feed poller, attachment processor, calendar parser
+│   └── schemas.py    # Ingestion data schemas (EmailContent, EmailAttachment)
 ├── extraction/       # LLM-powered data extraction
 │   ├── email.py      # Email Extraction Agent (Haiku triage + Sonnet extraction)
-│   ├── calendar.py   # Calendar Change Detector (diff, dedup, season detection)
-│   └── router.py     # Intent Router / Orchestrator (classifies WhatsApp messages)
+│   ├── calendar.py   # Calendar Change Detector (diff, dedup, import)
+│   ├── router.py     # Intent Router / Orchestrator (classifies WhatsApp messages)
+│   ├── dedup.py      # Fuzzy event deduplication (±30 min + title similarity)
+│   └── schemas.py    # Extraction data schemas (IntentType, ExtractedEvent, etc.)
 ├── agents/           # Reasoning agents
-│   ├── calendar.py   # Calendar Coordinator (scheduling, conflicts, sync)
-│   ├── logistics.py  # Logistics Planner (prep, gear, transport)
-│   ├── research.py   # Research Agent (camps, gifts, venues)
-│   └── reminders.py  # Reminder Engine (daily digest, weekly summary, immediate triggers)
+│   ├── calendar.py   # Calendar Coordinator (scheduling, conflicts, transport)
+│   ├── reminders.py  # Reminder Engine (daily digest, weekly summary)
+│   ├── onboarding.py # Conversational 3-step family onboarding
+│   ├── context.py    # Family context builder for LLM prompts
+│   ├── recurrence_detector.py  # Recurring schedule pattern detection
+│   └── schemas.py    # Agent data schemas (ResolvedEvent, Conflict, etc.)
 ├── actions/          # External side effects
 │   ├── gcal.py       # Google Calendar CRUD operations
 │   ├── gcal_outbox_processor.py  # Background loop processing GCal outbox items
 │   ├── gcal_reconciler.py        # Periodic local DB ↔ GCal reconciliation
 │   ├── whatsapp.py   # WhatsApp message sending (templates + free-form)
-│   ├── email.py      # Email sending (RSVPs, playdate messages)
 │   └── state.py      # Family state updates (Event Registry, profiles, learnings)
 ├── state/            # Data access layer
 │   ├── models.py     # SQLAlchemy models matching docs/schema.sql
@@ -75,16 +83,26 @@ src/
 │   ├── families.py   # Family and Caregiver queries
 │   ├── children.py   # Child profile queries
 │   ├── learning.py   # FamilyLearning queries
-│   └── memory.py     # Conversation memory (short-term + pgvector retrieval)
+│   ├── memory.py     # Conversation memory (short-term + pgvector retrieval)
+│   ├── schedules.py  # RecurringSchedule queries
+│   ├── preferences.py # CaregiverPreferences queries
+│   ├── pending.py    # PendingAction CRUD and expiration
+│   └── feedback.py   # ExtractionFeedback for training data collection
 ├── auth/             # Authentication and tenant management
 │   ├── oauth.py      # Google OAuth flow
 │   ├── tokens.py     # Token encryption, storage, refresh
+│   ├── google_client.py # Google API service factory with token refresh
 │   └── tenants.py    # Tenant lifecycle (create, onboard, delete)
-└── api/              # FastAPI application
-    ├── main.py       # App factory, middleware, startup
-    ├── webhooks.py   # Webhook endpoints (Gmail, GCal, WhatsApp, forward-to)
-    ├── oauth.py      # OAuth callback routes
-    └── health.py     # Health check endpoints
+├── api/              # FastAPI application
+│   ├── main.py       # App factory, middleware, startup
+│   ├── webhooks.py   # Webhook endpoints (Gmail, GCal, WhatsApp)
+│   ├── oauth.py      # OAuth callback routes
+│   ├── internal.py   # Cloud Scheduler-triggered internal routes
+│   └── health.py     # Health check endpoints
+└── utils/            # Shared utilities
+    ├── button_ids.py # Button ID encoding/decoding for WhatsApp routing
+    ├── timezone.py   # Family timezone utilities
+    └── rrule.py      # RRULE to GCal recurrence conversion
 ```
 
 ## Development Rules
