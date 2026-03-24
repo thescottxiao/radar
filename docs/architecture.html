@@ -201,6 +201,12 @@
             border: 1px solid #c4b5fd;
         }
 
+        .tag-phase3 {
+            background-color: #3b2f00;
+            color: #d29922;
+            border: 1px solid #d29922;
+        }
+
         .chat-mockup {
             background-color: #0d1117;
             border: 1px solid #30363d;
@@ -310,7 +316,7 @@
         }
 
         .phase-list li:before {
-            content: "→";
+            content: "\2192";
             position: absolute;
             left: 0;
             color: #6366f1;
@@ -549,13 +555,219 @@
             color: #8b949e;
             font-size: 0.85em;
         }
+
+        /* New styles for data flow sections */
+        .data-flow-section {
+            background-color: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 24px;
+            margin: 20px 0;
+        }
+
+        .flow-title {
+            font-weight: 600;
+            color: #79c0ff;
+            margin-bottom: 8px;
+            font-size: 1.1em;
+        }
+
+        .flow-trigger {
+            color: #8b949e;
+            font-size: 0.9em;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #30363d;
+        }
+
+        .flow-trace {
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            margin: 12px 0;
+            font-family: "Monaco", "Courier New", monospace;
+            font-size: 0.85em;
+            line-height: 1.8;
+            color: #c9d1d9;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+
+        .flow-trace .fn {
+            color: #d2a8ff;
+        }
+
+        .flow-trace .file {
+            color: #8b949e;
+        }
+
+        .flow-trace .data {
+            color: #7ee787;
+        }
+
+        .flow-trace .arrow {
+            color: #6366f1;
+        }
+
+        .flow-trace .model {
+            color: #f0883e;
+        }
+
+        .flow-trace .note {
+            color: #d29922;
+            font-style: italic;
+        }
+
+        .flow-mutations {
+            margin-top: 12px;
+            padding: 12px;
+            background-color: #0d1117;
+            border-left: 3px solid #6ee7b7;
+            border-radius: 4px;
+        }
+
+        .flow-mutations-title {
+            font-weight: 600;
+            color: #6ee7b7;
+            font-size: 0.85em;
+            margin-bottom: 8px;
+        }
+
+        .flow-mutations ul {
+            margin-left: 16px;
+            font-size: 0.85em;
+        }
+
+        .flow-mutations li {
+            margin-bottom: 4px;
+            color: #c9d1d9;
+        }
+
+        .flow-output {
+            margin-top: 12px;
+            padding: 12px;
+            background-color: #0d1117;
+            border-left: 3px solid #79c0ff;
+            border-radius: 4px;
+        }
+
+        .flow-output-title {
+            font-weight: 600;
+            color: #79c0ff;
+            font-size: 0.85em;
+            margin-bottom: 8px;
+        }
+
+        .subflow-title {
+            font-weight: 600;
+            color: #c9d1d9;
+            margin-top: 16px;
+            margin-bottom: 8px;
+            font-size: 0.95em;
+        }
+
+        .state-diagram {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 16px 0;
+        }
+
+        .state-node {
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 20px;
+            padding: 8px 16px;
+            font-size: 0.85em;
+            color: #c9d1d9;
+        }
+
+        .state-node.active {
+            border-color: #6ee7b7;
+            color: #6ee7b7;
+        }
+
+        .state-arrow {
+            color: #6366f1;
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+
+        .component-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 0.85em;
+        }
+
+        .component-table th {
+            background-color: #0d1117;
+            color: #79c0ff;
+            padding: 10px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid #30363d;
+            font-size: 0.95em;
+        }
+
+        .component-table td {
+            padding: 10px;
+            border-bottom: 1px solid #30363d;
+            color: #c9d1d9;
+            vertical-align: top;
+        }
+
+        .component-table td:first-child {
+            color: #d2a8ff;
+            font-family: "Monaco", "Courier New", monospace;
+            white-space: nowrap;
+        }
+
+        .component-table tr:hover {
+            background-color: #161b22;
+        }
+
+        .intent-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin: 12px 0;
+        }
+
+        .intent-item {
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 0.85em;
+        }
+
+        .intent-name {
+            color: #d2a8ff;
+            font-family: "Monaco", "Courier New", monospace;
+            font-weight: 600;
+        }
+
+        .intent-handler {
+            color: #8b949e;
+            font-size: 0.85em;
+            margin-top: 2px;
+        }
+
+        @media (max-width: 768px) {
+            .intent-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <!-- Header -->
         <header>
-            <div class="version-badge">v2 — Updated with product design decisions + user research</div>
+            <div class="version-badge">v3 — Detailed data flows for brainstorming new user flows</div>
             <h1>Radar Architecture</h1>
             <p class="subtitle">Multi-agent system for family logistics — WhatsApp-native, Gmail/GCal-integrated, multi-tenant SaaS</p>
         </header>
@@ -567,15 +779,22 @@
                 <li><a href="#decision-log">Decision Log</a></li>
                 <li><a href="#system-overview">System Overview</a></li>
                 <li><a href="#layer-details">Layer Details</a></li>
+                <li><a href="#flow-email">Flow: Email &rarr; Event Confirmation</a></li>
+                <li><a href="#flow-whatsapp">Flow: WhatsApp &rarr; Intent Routing</a></li>
+                <li><a href="#flow-gcal">Flow: GCal Sync</a></li>
+                <li><a href="#flow-transport">Flow: Transport Coordination</a></li>
+                <li><a href="#flow-learning">Flow: Learning Lifecycle</a></li>
+                <li><a href="#flow-digests">Flow: Digests &amp; Reminders</a></li>
+                <li><a href="#component-ref">Component Reference</a></li>
                 <li><a href="#suggest-ux">Suggest UX: 5 Interaction Patterns</a></li>
                 <li><a href="#onboarding">Onboarding Flow</a></li>
-                <li><a href="#recurring-seasons">Recurring Events & Seasons</a></li>
+                <li><a href="#recurring-seasons">Recurring Events &amp; Seasons</a></li>
                 <li><a href="#gap-detection">Proactive Gap Detection</a></li>
                 <li><a href="#birthday-flow">Birthday Party Invite Flow</a></li>
                 <li><a href="#autonomy">Autonomy Matrix</a></li>
                 <li><a href="#tech-stack">Technical Stack</a></li>
                 <li><a href="#multi-tenancy">Multi-Tenancy Design</a></li>
-                <li><a href="#risks">Key Risks & Mitigations</a></li>
+                <li><a href="#risks">Key Risks &amp; Mitigations</a></li>
                 <li><a href="#phases">Build Phases</a></li>
             </ul>
         </div>
@@ -667,164 +886,247 @@
 
         <!-- 2. System Overview -->
         <h2 id="system-overview">System Overview</h2>
-        <p>Radar is organized into four layers: Ingestion → Extraction → Reasoning → Action. Each layer builds on the previous one to transform raw family data into coordinated logistics:</p>
+        <p>Radar is organized into four layers: Ingestion &rarr; Extraction &rarr; Reasoning &rarr; Action. The diagram below shows both components and how data flows between them:</p>
 
         <div class="svg-wrapper">
-            <svg viewBox="0 0 900 1000" xmlns="http://www.w3.org/2000/svg">
+            <svg viewBox="0 0 960 1150" xmlns="http://www.w3.org/2000/svg">
                 <!-- Background -->
-                <rect width="900" height="1000" fill="#0f1117"/>
+                <rect width="960" height="1150" fill="#0f1117"/>
 
-                <!-- Layer labels -->
-                <text x="20" y="50" font-size="16" font-weight="bold" fill="#f0883e">LAYER 0: INGESTION</text>
-                <line x1="20" y1="60" x2="880" y2="60" stroke="#30363d" stroke-width="1"/>
+                <!-- ============ LAYER 0: INGESTION ============ -->
+                <text x="20" y="30" font-size="14" font-weight="bold" fill="#f0883e">LAYER 0: INGESTION</text>
+                <line x1="20" y1="38" x2="940" y2="38" stroke="#30363d" stroke-width="1"/>
 
-                <!-- Layer 0: Ingestion boxes -->
-                <g>
-                    <rect x="30" y="80" width="140" height="70" fill="#161b22" stroke="#30363d" stroke-width="1" rx="4"/>
-                    <text x="50" y="105" font-size="12" font-weight="600" fill="#79c0ff">Gmail Push</text>
-                    <text x="50" y="125" font-size="10" fill="#c9d1d9">Real-time emails</text>
-                    <text x="50" y="140" font-size="10" fill="#c9d1d9">via Pub/Sub</text>
+                <!-- Gmail Push -->
+                <rect x="30" y="55" width="150" height="60" fill="#161b22" stroke="#30363d" stroke-width="1" rx="4"/>
+                <text x="55" y="78" font-size="11" font-weight="600" fill="#79c0ff">Gmail Push</text>
+                <text x="55" y="95" font-size="9" fill="#8b949e">Pub/Sub notifications</text>
 
-                    <rect x="210" y="80" width="140" height="70" fill="#161b22" stroke="#30363d" stroke-width="1" rx="4"/>
-                    <text x="230" y="105" font-size="12" font-weight="600" fill="#79c0ff">GCal Webhooks</text>
-                    <text x="230" y="125" font-size="10" fill="#c9d1d9">Event changes</text>
-                    <text x="230" y="140" font-size="10" fill="#c9d1d9">from calendars</text>
+                <!-- GCal Webhooks -->
+                <rect x="210" y="55" width="150" height="60" fill="#161b22" stroke="#30363d" stroke-width="1" rx="4"/>
+                <text x="235" y="78" font-size="11" font-weight="600" fill="#79c0ff">GCal Webhooks</text>
+                <text x="235" y="95" font-size="9" fill="#8b949e">Push notifications</text>
 
-                    <rect x="390" y="80" width="140" height="70" fill="#161b22" stroke="#30363d" stroke-width="1" rx="4"/>
-                    <text x="410" y="105" font-size="12" font-weight="600" fill="#79c0ff">WhatsApp Group</text>
-                    <text x="410" y="125" font-size="10" fill="#c9d1d9">Messages, voice</text>
-                    <text x="410" y="140" font-size="10" fill="#c9d1d9">notes (Whisper)</text>
+                <!-- WhatsApp -->
+                <rect x="390" y="55" width="150" height="60" fill="#161b22" stroke="#30363d" stroke-width="1" rx="4"/>
+                <text x="415" y="78" font-size="11" font-weight="600" fill="#79c0ff">WhatsApp</text>
+                <text x="415" y="95" font-size="9" fill="#8b949e">Meta Cloud API</text>
 
-                    <rect x="570" y="80" width="140" height="70" fill="#161b22" stroke="#30363d" stroke-width="1" rx="4"/>
-                    <text x="590" y="105" font-size="12" font-weight="600" fill="#79c0ff">Forward-to Email</text>
-                    <text x="590" y="125" font-size="10" fill="#c9d1d9">family-{id}@</text>
-                    <text x="590" y="140" font-size="10" fill="#c9d1d9">radar.app</text>
+                <!-- Forward Email -->
+                <rect x="570" y="55" width="150" height="60" fill="#161b22" stroke="#30363d" stroke-width="1" rx="4"/>
+                <text x="590" y="78" font-size="11" font-weight="600" fill="#79c0ff">Forward-to Email</text>
+                <text x="590" y="95" font-size="9" fill="#8b949e">family-{id}@radar</text>
 
-                    <rect x="750" y="80" width="120" height="70" fill="#161b22" stroke="#30363d" stroke-width="1" rx="4"/>
-                    <text x="760" y="105" font-size="12" font-weight="600" fill="#79c0ff">ICS Feeds</text>
-                    <text x="760" y="125" font-size="10" fill="#c9d1d9">Sports leagues,</text>
-                    <text x="760" y="140" font-size="10" fill="#c9d1d9">schools (30min)</text>
-                </g>
+                <!-- ICS Feeds -->
+                <rect x="750" y="55" width="150" height="60" fill="#161b22" stroke="#30363d" stroke-width="1" rx="4"/>
+                <text x="775" y="78" font-size="11" font-weight="600" fill="#79c0ff">ICS Feeds</text>
+                <text x="775" y="95" font-size="9" fill="#8b949e">Periodic polling</text>
 
-                <!-- Layer 1 label -->
-                <text x="20" y="210" font-size="16" font-weight="bold" fill="#f0883e">LAYER 1: EXTRACTION</text>
-                <line x1="20" y1="220" x2="880" y2="220" stroke="#30363d" stroke-width="1"/>
+                <!-- Arrows from Layer 0 to Layer 1 -->
+                <defs>
+                    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                        <polygon points="0 0, 8 3, 0 6" fill="#6366f1"/>
+                    </marker>
+                    <marker id="arrowhead-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                        <polygon points="0 0, 8 3, 0 6" fill="#6ee7b7"/>
+                    </marker>
+                    <marker id="arrowhead-orange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                        <polygon points="0 0, 8 3, 0 6" fill="#f0883e"/>
+                    </marker>
+                </defs>
 
-                <!-- Layer 1: Extraction agents -->
-                <g>
-                    <rect x="30" y="240" width="240" height="100" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
-                    <text x="50" y="265" font-size="12" font-weight="600" fill="#79c0ff">Email Extraction Agent</text>
-                    <text x="50" y="285" font-size="10" fill="#c9d1d9">• Haiku triage (80%)</text>
-                    <text x="50" y="300" font-size="10" fill="#c9d1d9">• Sonnet extraction</text>
-                    <text x="50" y="315" font-size="10" fill="#c9d1d9">• Dedup &amp; confidence</text>
-                    <text x="50" y="330" font-size="10" fill="#c9d1d9">scoring</text>
+                <!-- Gmail → Email Extraction -->
+                <line x1="105" y1="115" x2="105" y2="175" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+                <text x="110" y="150" font-size="8" fill="#8b949e">EmailContent</text>
 
-                    <rect x="310" y="240" width="240" height="100" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
-                    <text x="330" y="265" font-size="12" font-weight="600" fill="#79c0ff">Calendar Change Detector</text>
-                    <text x="330" y="285" font-size="10" fill="#c9d1d9">• Classify: new/change/</text>
-                    <text x="330" y="300" font-size="10" fill="#c9d1d9">cancel/location</text>
-                    <text x="330" y="315" font-size="10" fill="#c9d1d9">• Season awareness</text>
-                    <text x="330" y="330" font-size="10" fill="#c9d1d9">• ICS polling</text>
+                <!-- GCal → Calendar Change Detector -->
+                <line x1="285" y1="115" x2="370" y2="175" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+                <text x="310" y="148" font-size="8" fill="#8b949e">gcal_event</text>
 
-                    <rect x="590" y="240" width="240" height="100" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
-                    <text x="610" y="265" font-size="12" font-weight="600" fill="#79c0ff">Intent Router</text>
-                    <text x="610" y="285" font-size="10" fill="#c9d1d9">• Classify messages:</text>
-                    <text x="610" y="300" font-size="10" fill="#c9d1d9">query, schedule, approve</text>
-                    <text x="610" y="315" font-size="10" fill="#c9d1d9">• Open conversation state</text>
-                    <text x="610" y="330" font-size="10" fill="#c9d1d9">for pending approval</text>
-                </g>
+                <!-- WhatsApp → Intent Router -->
+                <line x1="465" y1="115" x2="640" y2="175" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+                <text x="530" y="148" font-size="8" fill="#8b949e">message text</text>
 
-                <!-- Layer 2 label -->
-                <text x="20" y="420" font-size="16" font-weight="bold" fill="#f0883e">LAYER 2: REASONING</text>
-                <line x1="20" y1="430" x2="880" y2="430" stroke="#30363d" stroke-width="1"/>
+                <!-- Forward → Email Extraction -->
+                <line x1="645" y1="115" x2="180" y2="175" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrowhead)" stroke-dasharray="4,3"/>
+                <text x="390" y="140" font-size="8" fill="#8b949e">EmailContent</text>
 
-                <!-- Layer 2: Reasoning agents -->
-                <g>
-                    <rect x="30" y="450" width="210" height="120" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
-                    <text x="50" y="475" font-size="12" font-weight="600" fill="#79c0ff">Calendar Coordinator</text>
-                    <text x="50" y="495" font-size="10" fill="#c9d1d9">• Event creation</text>
-                    <text x="50" y="510" font-size="10" fill="#c9d1d9">• Conflict detection</text>
-                    <text x="50" y="525" font-size="10" fill="#c9d1d9">• Cross-child overlaps</text>
-                    <text x="50" y="540" font-size="10" fill="#c9d1d9">• Season management</text>
-                    <text x="50" y="555" font-size="10" fill="#c9d1d9">AUTO mode</text>
+                <!-- ICS → Dedup (via extraction) -->
+                <line x1="825" y1="115" x2="825" y2="175" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+                <text x="835" y="150" font-size="8" fill="#8b949e">parsed events</text>
 
-                    <rect x="280" y="450" width="210" height="120" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
-                    <text x="300" y="475" font-size="12" font-weight="600" fill="#79c0ff">Logistics Planner</text>
-                    <text x="300" y="495" font-size="10" fill="#c9d1d9">• Prep checklists</text>
-                    <text x="300" y="510" font-size="10" fill="#c9d1d9">• Gear tracking</text>
-                    <text x="300" y="525" font-size="10" fill="#c9d1d9">• Transport planning</text>
-                    <text x="300" y="540" font-size="10" fill="#c9d1d9">• Assignment nudging</text>
-                    <text x="300" y="555" font-size="10" fill="#c9d1d9">AUTO mode</text>
+                <!-- ============ LAYER 1: EXTRACTION ============ -->
+                <text x="20" y="170" font-size="14" font-weight="bold" fill="#f0883e">LAYER 1: EXTRACTION</text>
+                <line x1="20" y1="178" x2="940" y2="178" stroke="#30363d" stroke-width="1"/>
 
-                    <rect x="530" y="450" width="210" height="120" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
-                    <text x="550" y="475" font-size="12" font-weight="600" fill="#79c0ff">Research Agent</text>
-                    <text x="550" y="495" font-size="10" fill="#c9d1d9">• Gift recommendations</text>
-                    <text x="550" y="510" font-size="10" fill="#c9d1d9">• Camp/activity discovery</text>
-                    <text x="550" y="525" font-size="10" fill="#c9d1d9">• Venue lookup</text>
-                    <text x="550" y="540" font-size="10" fill="#c9d1d9">• Budget-aware</text>
-                    <text x="550" y="555" font-size="10" fill="#c9d1d9">SUGGEST mode</text>
+                <!-- Email Extraction Agent -->
+                <rect x="30" y="190" width="220" height="90" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
+                <text x="50" y="213" font-size="11" font-weight="600" fill="#79c0ff">Email Extraction Agent</text>
+                <text x="50" y="230" font-size="9" fill="#c9d1d9">Tier 1: Haiku triage (80% reject)</text>
+                <text x="50" y="245" font-size="9" fill="#c9d1d9">Tier 2: Sonnet extraction</text>
+                <text x="50" y="260" font-size="9" fill="#7ee787">Out: ExtractionResult</text>
+                <text x="50" y="273" font-size="8" fill="#8b949e">(events[], action_items[], learnings[])</text>
 
-                    <rect x="780" y="450" width="90" height="120" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
-                    <text x="795" y="475" font-size="11" font-weight="600" fill="#79c0ff">Reminder</text>
-                    <text x="795" y="492" font-size="11" font-weight="600" fill="#79c0ff">Engine</text>
-                    <text x="795" y="512" font-size="10" fill="#c9d1d9">• Daily (action)</text>
-                    <text x="795" y="527" font-size="10" fill="#c9d1d9">• Weekly (Sun)</text>
-                    <text x="795" y="542" font-size="10" fill="#c9d1d9">• Immediate</text>
-                    <text x="795" y="557" font-size="10" fill="#c9d1d9">alerts</text>
-                </g>
+                <!-- Calendar Change Detector -->
+                <rect x="280" y="190" width="220" height="90" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
+                <text x="300" y="213" font-size="11" font-weight="600" fill="#79c0ff">Calendar Change Detector</text>
+                <text x="300" y="230" font-size="9" fill="#c9d1d9">new / update / cancel</text>
+                <text x="300" y="245" font-size="9" fill="#c9d1d9">Dedup check on import</text>
+                <text x="300" y="260" font-size="9" fill="#7ee787">Out: change_type + Event</text>
+                <text x="300" y="273" font-size="8" fill="#8b949e">(silent import, no WhatsApp)</text>
 
-                <!-- Family State Store -->
-                <g>
-                    <rect x="30" y="610" width="840" height="100" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
-                    <text x="50" y="635" font-size="12" font-weight="600" fill="#79c0ff">Family State Store</text>
-                    <text x="50" y="655" font-size="10" fill="#c9d1d9">Event Registry (all events, dedup, RSVP status, prep tasks, transport assignments)</text>
-                    <text x="50" y="675" font-size="10" fill="#c9d1d9">Family Profiles (child data, activities, friends, gear inventory, learned facts)</text>
-                    <text x="50" y="695" font-size="10" fill="#c9d1d9">Conversation Memory (short-term state for open conversation, long-term summaries with embeddings)</text>
-                </g>
+                <!-- Intent Router -->
+                <rect x="530" y="190" width="220" height="90" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
+                <text x="550" y="213" font-size="11" font-weight="600" fill="#79c0ff">Intent Router / Orchestrator</text>
+                <text x="550" y="230" font-size="9" fill="#c9d1d9">split_compound_message()</text>
+                <text x="550" y="245" font-size="9" fill="#c9d1d9">classify_intent() [Haiku]</text>
+                <text x="550" y="260" font-size="9" fill="#7ee787">Out: IntentResult</text>
+                <text x="550" y="273" font-size="8" fill="#8b949e">(15 intent types &rarr; handler dispatch)</text>
 
-                <!-- Layer 3 label -->
-                <text x="20" y="780" font-size="16" font-weight="bold" fill="#f0883e">LAYER 3: ACTION</text>
-                <line x1="20" y1="790" x2="880" y2="790" stroke="#30363d" stroke-width="1"/>
+                <!-- ICS / Dedup -->
+                <rect x="780" y="190" width="150" height="90" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
+                <text x="800" y="213" font-size="11" font-weight="600" fill="#79c0ff">ICS Parser</text>
+                <text x="800" y="230" font-size="9" fill="#c9d1d9">parse + diff + dedup</text>
+                <text x="800" y="245" font-size="9" fill="#c9d1d9">&plusmn;30min &amp; title &gt;0.7</text>
+                <text x="800" y="260" font-size="9" fill="#7ee787">Out: list[Event]</text>
 
-                <!-- AUTO Actions -->
-                <text x="50" y="820" font-size="11" font-weight="600" fill="#6ee7b7">AUTO (Internal, no approval)</text>
-                <g>
-                    <rect x="30" y="835" width="160" height="80" fill="#064e3b" stroke="#6ee7b7" stroke-width="1" rx="4" opacity="0.3"/>
-                    <text x="50" y="860" font-size="11" font-weight="600" fill="#6ee7b7">GCal Writer</text>
-                    <text x="50" y="880" font-size="9" fill="#6ee7b7">Write events to</text>
-                    <text x="50" y="893" font-size="9" fill="#6ee7b7">all caregivers</text>
+                <!-- Arrows from Layer 1 to Layer 2 / State -->
 
-                    <rect x="215" y="835" width="160" height="80" fill="#064e3b" stroke="#6ee7b7" stroke-width="1" rx="4" opacity="0.3"/>
-                    <text x="235" y="860" font-size="11" font-weight="600" fill="#6ee7b7">WhatsApp Notifier</text>
-                    <text x="235" y="880" font-size="9" fill="#6ee7b7">Send reminders,</text>
-                    <text x="235" y="893" font-size="9" fill="#6ee7b7">digests, alerts</text>
+                <!-- Email Extraction → persist_extraction → Event Registry -->
+                <line x1="140" y1="280" x2="140" y2="350" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+                <text x="148" y="320" font-size="8" fill="#8b949e">persist_extraction()</text>
 
-                    <rect x="400" y="835" width="160" height="80" fill="#064e3b" stroke="#6ee7b7" stroke-width="1" rx="4" opacity="0.3"/>
-                    <text x="420" y="860" font-size="11" font-weight="600" fill="#6ee7b7">Family State Updater</text>
-                    <text x="420" y="880" font-size="9" fill="#6ee7b7">Persist learnings,</text>
-                    <text x="420" y="893" font-size="9" fill="#6ee7b7">dedup, track state</text>
+                <!-- Calendar Change → Event Registry -->
+                <line x1="390" y1="280" x2="390" y2="350" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+                <text x="398" y="320" font-size="8" fill="#8b949e">upsert Event</text>
 
-                    <rect x="585" y="835" width="160" height="80" fill="#064e3b" stroke="#6ee7b7" stroke-width="1" rx="4" opacity="0.3"/>
-                    <text x="605" y="860" font-size="11" font-weight="600" fill="#6ee7b7">Assignment Tracker</text>
-                    <text x="605" y="880" font-size="9" fill="#6ee7b7">Log transport,</text>
-                    <text x="605" y="893" font-size="9" fill="#6ee7b7">task assignments</text>
-                </g>
+                <!-- Intent Router → Calendar Coordinator -->
+                <line x1="640" y1="280" x2="640" y2="445" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+                <text x="648" y="370" font-size="8" fill="#8b949e">route_intent()</text>
 
-                <!-- SUGGEST Actions -->
-                <text x="50" y="950" font-size="11" font-weight="600" fill="#c4b5fd">SUGGEST (External, approval required)</text>
-                <g>
-                    <rect x="30" y="965" width="160" height="25" fill="#4c1d95" stroke="#c4b5fd" stroke-width="1" rx="4" opacity="0.3"/>
-                    <text x="50" y="982" font-size="10" font-weight="600" fill="#c4b5fd">Email Drafter</text>
+                <!-- ICS → Event Registry -->
+                <line x1="855" y1="280" x2="700" y2="350" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+                <text x="790" y="320" font-size="8" fill="#8b949e">dedup &rarr; create</text>
 
-                    <rect x="215" y="965" width="160" height="25" fill="#4c1d95" stroke="#c4b5fd" stroke-width="1" rx="4" opacity="0.3"/>
-                    <text x="235" y="982" font-size="10" font-weight="600" fill="#c4b5fd">Purchase Advisor</text>
+                <!-- ============ SHARED STATE ============ -->
+                <rect x="30" y="350" width="710" height="85" fill="#161b22" stroke="#6366f1" stroke-width="2" rx="4" stroke-dasharray="5,3"/>
+                <text x="50" y="375" font-size="12" font-weight="600" fill="#79c0ff">Family State Store (PostgreSQL, family_id isolation)</text>
+                <text x="50" y="395" font-size="9" fill="#c9d1d9">Event Registry &bull; ActionItems &bull; RecurringSchedules &bull; GCal Outbox</text>
+                <text x="50" y="410" font-size="9" fill="#c9d1d9">FamilyLearning &bull; ConversationMemory &bull; PendingActions &bull; ChildProfiles</text>
+                <text x="50" y="425" font-size="9" fill="#c9d1d9">CaregiverPreferences &bull; ScheduleExceptions &bull; ExtractionFeedback</text>
 
-                    <rect x="400" y="965" width="160" height="25" fill="#4c1d95" stroke="#c4b5fd" stroke-width="1" rx="4" opacity="0.3"/>
-                    <text x="420" y="982" font-size="10" font-weight="600" fill="#c4b5fd">RSVP Drafter</text>
+                <!-- ============ LAYER 2: REASONING ============ -->
+                <text x="20" y="460" font-size="14" font-weight="bold" fill="#f0883e">LAYER 2: REASONING</text>
+                <line x1="20" y1="468" x2="940" y2="468" stroke="#30363d" stroke-width="1"/>
 
-                    <rect x="585" y="965" width="160" height="25" fill="#4c1d95" stroke="#c4b5fd" stroke-width="1" rx="4" opacity="0.3"/>
-                    <text x="605" y="982" font-size="10" font-weight="600" fill="#c4b5fd">Camp Registrar (v2)</text>
-                </g>
+                <!-- Calendar Coordinator -->
+                <rect x="30" y="480" width="200" height="120" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
+                <text x="50" y="503" font-size="11" font-weight="600" fill="#79c0ff">Calendar Coordinator</text>
+                <text x="50" y="520" font-size="9" fill="#c9d1d9">handle_schedule()</text>
+                <text x="50" y="535" font-size="9" fill="#c9d1d9">handle_query()</text>
+                <text x="50" y="550" font-size="9" fill="#c9d1d9">handle_assignment_claim()</text>
+                <text x="50" y="565" font-size="9" fill="#c9d1d9">conflict detection</text>
+                <text x="50" y="580" font-size="9" fill="#c9d1d9">transport coordination</text>
+                <text x="50" y="595" font-size="8" fill="#6ee7b7">AUTO</text>
+
+                <!-- Reminder Engine -->
+                <rect x="260" y="480" width="200" height="120" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
+                <text x="280" y="503" font-size="11" font-weight="600" fill="#79c0ff">Reminder Engine</text>
+                <text x="280" y="520" font-size="9" fill="#c9d1d9">generate_daily_digest()</text>
+                <text x="280" y="535" font-size="9" fill="#c9d1d9">generate_weekly_summary()</text>
+                <text x="280" y="550" font-size="9" fill="#c9d1d9">check_immediate_triggers()</text>
+                <text x="280" y="565" font-size="9" fill="#c9d1d9">learning confirmation cycle</text>
+                <text x="280" y="580" font-size="9" fill="#c9d1d9">learning graduation</text>
+                <text x="280" y="595" font-size="8" fill="#6ee7b7">AUTO</text>
+
+                <!-- Onboarding Agent -->
+                <rect x="490" y="480" width="200" height="120" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
+                <text x="510" y="503" font-size="11" font-weight="600" fill="#79c0ff">Onboarding Agent</text>
+                <text x="510" y="520" font-size="9" fill="#c9d1d9">3-step conversational</text>
+                <text x="510" y="535" font-size="9" fill="#c9d1d9">Step 1: children info</text>
+                <text x="510" y="550" font-size="9" fill="#c9d1d9">Step 2: Google OAuth</text>
+                <text x="510" y="565" font-size="9" fill="#c9d1d9">Step 3: confirmation</text>
+                <text x="510" y="595" font-size="8" fill="#6ee7b7">AUTO</text>
+
+                <!-- Recurrence Detector -->
+                <rect x="720" y="480" width="200" height="120" fill="#161b22" stroke="#30363d" stroke-width="2" rx="4"/>
+                <text x="740" y="503" font-size="11" font-weight="600" fill="#79c0ff">Recurrence Detector</text>
+                <text x="740" y="520" font-size="9" fill="#c9d1d9">detect_recurring_pattern()</text>
+                <text x="740" y="535" font-size="9" fill="#c9d1d9">3+ similar events on</text>
+                <text x="740" y="550" font-size="9" fill="#c9d1d9">same DOW in 60 days</text>
+                <text x="740" y="565" font-size="9" fill="#7ee787">Out: RecurrenceCandidate</text>
+                <text x="740" y="595" font-size="8" fill="#6ee7b7">AUTO</text>
+
+                <!-- Arrows: Reasoning ↔ State Store -->
+                <line x1="130" y1="480" x2="130" y2="435" stroke="#6366f1" stroke-width="1" marker-end="url(#arrowhead)" stroke-dasharray="3,2"/>
+                <line x1="150" y1="435" x2="150" y2="480" stroke="#6366f1" stroke-width="1" marker-end="url(#arrowhead)" stroke-dasharray="3,2"/>
+
+                <line x1="360" y1="480" x2="360" y2="435" stroke="#6366f1" stroke-width="1" marker-end="url(#arrowhead)" stroke-dasharray="3,2"/>
+                <line x1="380" y1="435" x2="380" y2="480" stroke="#6366f1" stroke-width="1" marker-end="url(#arrowhead)" stroke-dasharray="3,2"/>
+
+                <!-- ============ LAYER 3: ACTION ============ -->
+                <text x="20" y="640" font-size="14" font-weight="bold" fill="#f0883e">LAYER 3: ACTION</text>
+                <line x1="20" y1="648" x2="940" y2="648" stroke="#30363d" stroke-width="1"/>
+
+                <!-- GCal Outbox + Processor -->
+                <rect x="30" y="665" width="200" height="80" fill="#064e3b" stroke="#6ee7b7" stroke-width="1" rx="4" opacity="0.4"/>
+                <text x="50" y="688" font-size="11" font-weight="600" fill="#6ee7b7">GCal Outbox Processor</text>
+                <text x="50" y="705" font-size="9" fill="#6ee7b7">5s poll, batch=10</text>
+                <text x="50" y="720" font-size="9" fill="#6ee7b7">Retry: 30s &rarr; 2h, max 5</text>
+                <text x="50" y="735" font-size="9" fill="#6ee7b7">Idempotency keys</text>
+
+                <!-- WhatsApp Sender -->
+                <rect x="260" y="665" width="200" height="80" fill="#064e3b" stroke="#6ee7b7" stroke-width="1" rx="4" opacity="0.4"/>
+                <text x="280" y="688" font-size="11" font-weight="600" fill="#6ee7b7">WhatsApp Sender</text>
+                <text x="280" y="705" font-size="9" fill="#6ee7b7">send_to_family()</text>
+                <text x="280" y="720" font-size="9" fill="#6ee7b7">send_buttons_to_family()</text>
+                <text x="280" y="735" font-size="9" fill="#6ee7b7">send_template_to_family()</text>
+
+                <!-- State Updater -->
+                <rect x="490" y="665" width="200" height="80" fill="#064e3b" stroke="#6ee7b7" stroke-width="1" rx="4" opacity="0.4"/>
+                <text x="510" y="688" font-size="11" font-weight="600" fill="#6ee7b7">State Updater</text>
+                <text x="510" y="705" font-size="9" fill="#6ee7b7">persist_extraction()</text>
+                <text x="510" y="720" font-size="9" fill="#6ee7b7">dedup + merge</text>
+                <text x="510" y="735" font-size="9" fill="#6ee7b7">learning creation</text>
+
+                <!-- GCal Reconciler -->
+                <rect x="720" y="665" width="200" height="80" fill="#064e3b" stroke="#6ee7b7" stroke-width="1" rx="4" opacity="0.4"/>
+                <text x="740" y="688" font-size="11" font-weight="600" fill="#6ee7b7">GCal Reconciler</text>
+                <text x="740" y="705" font-size="9" fill="#6ee7b7">Periodic sync (60min)</text>
+                <text x="740" y="720" font-size="9" fill="#6ee7b7">source=cal: GCal wins</text>
+                <text x="740" y="735" font-size="9" fill="#6ee7b7">else: local DB wins</text>
+
+                <!-- External systems -->
+                <text x="20" y="785" font-size="14" font-weight="bold" fill="#f0883e">EXTERNAL</text>
+                <line x1="20" y1="793" x2="940" y2="793" stroke="#30363d" stroke-width="1"/>
+
+                <rect x="30" y="810" width="150" height="50" fill="#0d1117" stroke="#30363d" stroke-width="1" rx="4"/>
+                <text x="60" y="835" font-size="11" font-weight="600" fill="#c9d1d9">Google Calendar</text>
+                <text x="60" y="850" font-size="9" fill="#8b949e">API v3</text>
+
+                <rect x="210" y="810" width="150" height="50" fill="#0d1117" stroke="#30363d" stroke-width="1" rx="4"/>
+                <text x="240" y="835" font-size="11" font-weight="600" fill="#c9d1d9">WhatsApp Users</text>
+                <text x="240" y="850" font-size="9" fill="#8b949e">1:1 messages</text>
+
+                <rect x="390" y="810" width="150" height="50" fill="#0d1117" stroke="#30363d" stroke-width="1" rx="4"/>
+                <text x="420" y="835" font-size="11" font-weight="600" fill="#c9d1d9">Claude API</text>
+                <text x="420" y="850" font-size="9" fill="#8b949e">Haiku + Sonnet</text>
+
+                <rect x="570" y="810" width="150" height="50" fill="#0d1117" stroke="#30363d" stroke-width="1" rx="4"/>
+                <text x="590" y="835" font-size="11" font-weight="600" fill="#c9d1d9">Cloud Scheduler</text>
+                <text x="590" y="850" font-size="9" fill="#8b949e">Digests, watches</text>
+
+                <!-- Arrows from Action layer to External -->
+                <line x1="130" y1="745" x2="105" y2="810" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrowhead-green)"/>
+                <line x1="360" y1="745" x2="285" y2="810" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrowhead-green)"/>
+
+                <!-- Bidirectional GCal Reconciler ↔ Google Calendar -->
+                <line x1="820" y1="745" x2="130" y2="810" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrowhead-orange)" stroke-dasharray="4,3"/>
+                <text x="450" y="775" font-size="8" fill="#f0883e">reconcile (bidirectional)</text>
+
+                <!-- Cloud Scheduler → Internal routes -->
+                <line x1="645" y1="810" x2="360" y2="600" stroke="#f0883e" stroke-width="1" marker-end="url(#arrowhead-orange)" stroke-dasharray="4,3"/>
+                <text x="520" y="710" font-size="8" fill="#f0883e">daily/weekly triggers</text>
             </svg>
         </div>
 
@@ -836,11 +1138,11 @@
             <div class="agent-name">Email Extraction Agent</div>
             <div class="agent-purpose">Convert raw emails into structured Event and ActionItem records</div>
             <ul class="capabilities-list">
-                <li><strong>Tier 1 (Triage):</strong> Claude Haiku binary classification — "Is this email relevant to family/kids activities?" (~80% irrelevant, discarded immediately)</li>
-                <li><strong>Tier 2 (Extraction):</strong> Claude Sonnet extracts structured data into Event and ActionItem schemas</li>
-                <li><strong>Scope:</strong> Events (parties, practices, games, appointments), action items (forms, payments, items to bring), recurring patterns, child references, contact info</li>
-                <li><strong>Deduplication:</strong> Before creating Event, fuzzy-match against Event Registry: datetime ±30 min + title similarity >0.7</li>
-                <li><strong>Confidence scoring:</strong> Each extraction includes 0.0–1.0 score. Below 0.6 → explicit "Is this right?" prompt. Above 0.6 → implicit correction opportunity</li>
+                <li><strong>Tier 1 (Triage):</strong> Claude Haiku binary classification — "Is this email relevant to family/kids activities?" (~80% irrelevant, discarded immediately). Parsed with <code>startswith("RELEVANT")</code> for lenient matching.</li>
+                <li><strong>Tier 2 (Extraction):</strong> Claude Sonnet extracts structured data into Event, ActionItem, and Learning schemas. Email content wrapped in <code>&lt;email_data&gt;</code> blocks for prompt injection defense.</li>
+                <li><strong>Output:</strong> <code>ExtractionResult</code> containing <code>events[]</code>, <code>action_items[]</code>, <code>learnings[]</code>, <code>email_summary</code></li>
+                <li><strong>Deduplication:</strong> Before creating Event, fuzzy-match against Event Registry: datetime &plusmn;30 min + title similarity >0.7</li>
+                <li><strong>Confidence scoring:</strong> Each extraction includes 0.0&ndash;1.0 score. Below 0.6 &rarr; explicit "Is this right?" prompt. Above 0.6 &rarr; implicit correction opportunity</li>
             </ul>
         </div>
 
@@ -848,75 +1150,749 @@
             <div class="agent-name">Calendar Change Detector</div>
             <div class="agent-purpose">Process GCal webhook notifications and classify changes</div>
             <ul class="capabilities-list">
-                <li><strong>Classifications:</strong> new_event, time_change, cancellation, location_change, attendee_change</li>
-                <li><strong>Season awareness:</strong> If recurring instance is modified/cancelled, update only that instance in Season exceptions list</li>
-                <li><strong>ICS feed processing:</strong> Same change detection logic applied to diffed ICS feed data on each 30-minute poll cycle</li>
+                <li><strong>Classifications:</strong> new_event, time_change, cancellation, location_change</li>
+                <li><strong>Handlers:</strong> <code>_handle_new_event()</code> (dedup check + create), <code>_handle_update()</code> (diff fields), <code>_handle_cancellation()</code> (soft-delete)</li>
+                <li><strong>Silent import:</strong> GCal changes are imported to local DB without WhatsApp notifications (user already knows)</li>
+                <li><strong>ICS feed processing:</strong> Same change detection logic applied to diffed ICS feed data on each poll cycle</li>
             </ul>
         </div>
 
         <div class="agent-card">
             <div class="agent-name">Intent Router (Orchestrator)</div>
-            <div class="agent-purpose">Classify inbound WhatsApp messages and route to appropriate agent</div>
+            <div class="agent-purpose">Classify inbound WhatsApp messages and route to appropriate handler</div>
             <ul class="capabilities-list">
-                <li><strong>Intents:</strong> query, schedule, prepare, research, edit_instruction, approve, assignment_claim, update, correction, dismiss, general</li>
-                <li><strong>Open conversation state:</strong> When SUGGEST-mode action is pending approval, router enters "pending approval" state. Any reply classified as edit_instruction, approve, or dismiss</li>
-                <li><strong>Voice handling:</strong> Audio messages transcribed via Whisper API, then processed through intent classification pipeline</li>
+                <li><strong>Pre-processing:</strong> <code>split_compound_message()</code> breaks multi-intent messages into single statements (Haiku, skipped for &lt;60 char messages)</li>
+                <li><strong>Classification:</strong> Button replies decoded directly (confidence=1.0). Text classified by Haiku with last 10 messages as context. Pending approval actions checked first.</li>
+                <li><strong>15 intent types:</strong> add_event, query_schedule, modify_event, cancel_event, assign_transport, release_transport, rsvp_response, share_info, approval_response, event_update, set_preference, correct_learning, general_question, greeting, unknown</li>
+                <li><strong>Dispatch:</strong> <code>route_intent()</code> maps each intent type to a handler function in <code>router.py</code> or <code>agents/calendar.py</code></li>
             </ul>
         </div>
 
         <h3>Layer 2: Reasoning Agents</h3>
         <div class="agent-card">
             <div class="agent-name">Calendar Coordinator Agent <span class="tag tag-auto">AUTO</span></div>
-            <div class="agent-purpose">All scheduling, conflict detection, and caregiver calendar synchronization</div>
+            <div class="agent-purpose">All scheduling, conflict detection, transport coordination, and caregiver calendar synchronization</div>
             <ul class="capabilities-list">
-                <li><strong>Event creation:</strong> When event confirmed, create GCal events on all connected caregiver calendars</li>
-                <li><strong>Conflict detection:</strong> Before adding any event, check all caregivers' calendars for overlaps. Surface conflicts to group</li>
-                <li><strong>Cross-child conflicts:</strong> "Jake has soccer at 3pm and Emma has piano at 3:30pm — different locations. Who's taking whom?"</li>
-                <li><strong>Playdate scheduling:</strong> Check availability → suggest times → draft message to other parent (SUGGEST) → track response</li>
-                <li><strong>Season management:</strong> After confirmation, auto-create individual Event instances for each occurrence</li>
-            </ul>
-        </div>
-
-        <div class="agent-card">
-            <div class="agent-name">Logistics Planner Agent <span class="tag tag-auto">AUTO</span></div>
-            <div class="agent-purpose">Everything that needs to happen before and around events</div>
-            <ul class="capabilities-list">
-                <li><strong>Prep checklist generation:</strong> Auto-generate ActionItems based on event type (birthday → gift + RSVP + ride check; season start → gear check + forms; camp → registration + forms + packing)</li>
-                <li><strong>Gear tracking:</strong> Maintain gear_inventory on Child records. Surface gaps at season transitions: "Does Jake still have cleats that fit?"</li>
-                <li><strong>Transportation planning:</strong> For recurring events, propose standing transport schedule. For one-off events, surface assignment question to group</li>
-                <li><strong>Assignment nudging:</strong> If unclaimed and event approaching, nudge again. Timing is context-aware (event in 4 hours = urgent; 5 days = gentle)</li>
-            </ul>
-        </div>
-
-        <div class="agent-card">
-            <div class="agent-name">Research Agent <span class="tag tag-suggest">SUGGEST</span></div>
-            <div class="agent-purpose">External information retrieval for camps, gifts, activities, venues</div>
-            <ul class="capabilities-list">
-                <li><strong>Gift recommendations:</strong> Based on birthday child's age and family's learned budget. Present 3 options via WhatsApp. "Other ideas" re-runs with different parameters</li>
-                <li><strong>Camp/activity discovery:</strong> Search for options matching child age, family location, target dates, budget. Ranked results with key details</li>
-                <li><strong>Venue lookup:</strong> Party venues, activity providers, sports facilities near family's location</li>
-                <li><strong>All outputs are SUGGEST mode:</strong> Require caregiver approval before any action</li>
+                <li><strong>Event creation:</strong> <code>handle_schedule()</code> &mdash; LLM extracts event details &rarr; resolve datetime &rarr; dedup &rarr; create Event &rarr; link children &rarr; transport defaults &rarr; GCal outbox</li>
+                <li><strong>Schedule queries:</strong> <code>handle_query()</code> &mdash; queries local DB first (14-day window), falls back to GCal API only if local DB is empty</li>
+                <li><strong>Transport claims:</strong> <code>handle_assignment_claim()</code> &mdash; supports single, specific, or bulk ("all") scopes. Updates <code>drop_off_by</code>/<code>pick_up_by</code> on Event</li>
+                <li><strong>Conflict detection:</strong> Before adding any event, check for overlaps. Sibling conflicts: same caregiver assigned to overlapping events (&plusmn;30min) for different children at different locations</li>
+                <li><strong>Event updates:</strong> Two-tier context strategy &mdash; recent conversation memory + local DB search (90-day window) + LLM matching to identify target event</li>
             </ul>
         </div>
 
         <div class="agent-card">
             <div class="agent-name">Reminder Engine <span class="tag tag-auto">AUTO</span></div>
-            <div class="agent-purpose">Scheduled notification system using cron-based evaluation + LLM for natural language</div>
+            <div class="agent-purpose">Scheduled notification system with learning confirmation lifecycle</div>
             <ul class="capabilities-list">
-                <li><strong>Daily digest:</strong> Fires ONLY when actionable (skips empty days). Content: today's events with prep status, approaching deadlines, unclaimed assignments</li>
-                <li><strong>Weekly Sunday summary:</strong> ALWAYS fires. Content: week ahead, family learnings to review, season schedule updates, prep status</li>
-                <li><strong>Immediate triggers:</strong> Short RSVP window (&lt;48h), scheduling conflict detected, unclaimed transport approaching, season exception detected</li>
+                <li><strong>Daily digest:</strong> Fires ONLY when actionable (skips empty days). Content: today's events, approaching deadlines (&lt;48h), unclaimed transport (&lt;48h)</li>
+                <li><strong>Weekly Sunday summary:</strong> ALWAYS fires. (1) Auto-confirm previously surfaced learnings, (2) graduate confirmed learnings to structured tables, (3) week-ahead events, (4) new learnings to review, (5) RSVP reminders</li>
+                <li><strong>Immediate triggers:</strong> RSVP deadline &lt;48h, unclaimed transport &lt;48h (&lt;4h = "TODAY" urgency tier)</li>
+                <li><strong>Learning graduation:</strong> <code>child_school</code> &rarr; update <code>Child.school</code>; <code>child_activity</code> &rarr; append to <code>Child.activities</code>; <code>contact</code> &rarr; update <code>ChildFriend</code></li>
+            </ul>
+        </div>
+
+        <div class="agent-card">
+            <div class="agent-name">Onboarding Agent <span class="tag tag-auto">AUTO</span></div>
+            <div class="agent-purpose">Conversational 3-step family setup</div>
+            <ul class="capabilities-list">
+                <li><strong>Step 1:</strong> Extract children info (names, ages) via LLM &rarr; create Child rows, update caregiver name, send OAuth URL</li>
+                <li><strong>Step 2:</strong> Wait for OAuth completion; allow skip; re-send link if still pending</li>
+                <li><strong>Step 3:</strong> Set <code>family.onboarding_complete = True</code>, return confirmation</li>
+                <li><strong>Determination:</strong> No children &rarr; Step 1; Children exist, no OAuth &rarr; Step 2; Both done &rarr; Step 3</li>
+            </ul>
+        </div>
+
+        <div class="agent-card">
+            <div class="agent-name">Recurrence Detector <span class="tag tag-auto">AUTO</span></div>
+            <div class="agent-purpose">Pattern recognition for converting single events to recurring schedules</div>
+            <ul class="capabilities-list">
+                <li><strong>Detection:</strong> Scans 60-day window for &ge;3 similar events (title similarity &ge;0.7) on same day-of-week</li>
+                <li><strong>Output:</strong> <code>RecurrenceCandidate</code> with activity_name, day_of_week, suggested RRULE, human-readable pattern</li>
+                <li><strong>Trigger:</strong> Runs when new events are created; skips events already marked as recurring</li>
             </ul>
         </div>
 
         <h3>Family State Store</h3>
         <div class="callout">
-            <div class="callout-title">Persistent, multi-table state hub</div>
-            <p><strong>Event Registry:</strong> All events, deduped, RSVP status, prep tasks, transport assignments</p>
-            <p><strong>Family Profiles:</strong> Child data (name, age, school, grade, activities, friends, gear), learned facts (contact info, schedule patterns, budget)</p>
-            <p><strong>Conversation Memory:</strong> Short-term state for open conversation, long-term summaries with vector embeddings for semantic retrieval</p>
-            <p><strong>Family Learning:</strong> Extracted facts from emails, calendar, conversation with confidence scores and confirmation status</p>
+            <div class="callout-title">Persistent, multi-table state hub (PostgreSQL, row-level <code>family_id</code> isolation)</div>
+            <p><strong>Event Registry:</strong> All events (deduped), RSVP status, prep tasks, transport assignments (drop_off_by, pick_up_by), source_refs for GCal mapping</p>
+            <p><strong>Family Profiles:</strong> Child data (name, age, school, grade, activities, friends), caregiver data (name, phone, Google tokens)</p>
+            <p><strong>Conversation Memory:</strong> Short-term state (last 10&ndash;20 messages for intent context), with TTL expiry</p>
+            <p><strong>Family Learning:</strong> Extracted facts with confidence scores and lifecycle: unconfirmed &rarr; surfaced &rarr; confirmed &rarr; graduated/superseded</p>
+            <p><strong>GCal Outbox:</strong> Async write queue with idempotency keys. Operations: create, update, patch, delete. Exponential backoff retry.</p>
+            <p><strong>Pending Actions:</strong> SUGGEST-mode drafts awaiting caregiver approval. Tracks action_type, draft_content, edit history, expiration.</p>
+            <p><strong>Recurring Schedules:</strong> Activity patterns with RRULEs, transport defaults (default drop_off/pick_up caregiver), schedule exceptions.</p>
         </div>
+
+        <!-- ============ DATA FLOW SECTIONS ============ -->
+
+        <h2 id="flow-email">Data Flow: Email &rarr; Event Confirmation</h2>
+        <p>Traces a Gmail notification through triage, extraction, dedup, and caregiver confirmation to GCal sync.</p>
+
+        <div class="data-flow-section">
+            <div class="flow-title">Trigger</div>
+            <div class="flow-trigger">Gmail Pub/Sub push notification arrives at <code>POST /webhooks/gmail</code>. Also applies to forwarded emails via <code>POST /webhooks/forward-email</code> (same pipeline after payload parsing).</div>
+
+            <div class="flow-trace"><span class="file">api/webhooks.py</span>
+  <span class="fn">gmail_webhook()</span> &rarr; background task: <span class="fn">_process_gmail_notification(payload)</span>
+
+<span class="file">ingestion/gmail.py</span>
+  <span class="fn">handle_gmail_notification(session, payload)</span>
+    <span class="arrow">&rarr;</span> Decode Pub/Sub message &rarr; extract emailAddress + historyId
+    <span class="arrow">&rarr;</span> <span class="fn">families_dal.get_caregiver_by_email()</span> &rarr; Caregiver
+    <span class="arrow">&rarr;</span> <span class="fn">_get_access_token(caregiver)</span> <span class="note">(handles token refresh)</span>
+    <span class="arrow">&rarr;</span> <span class="fn">_get_new_message_ids(access_token, last_history_id)</span> &rarr; list[str]
+    <span class="arrow">&rarr;</span> For each message_id:
+        <span class="arrow">&rarr;</span> <span class="fn">fetch_email_content(access_token, msg_id)</span> &rarr; <span class="data">EmailContent</span>
+              <span class="note">(from_address, subject, body_text, body_html, attachments)</span>
+        <span class="arrow">&rarr;</span> ICS attachments? &rarr; <span class="fn">ics.process_ics_attachment()</span> &rarr; <span class="data">list[Event]</span>
+
+<span class="file">extraction/email.py</span>
+  <span class="fn">process_email(session, family_id, email, source="email")</span>
+    <span class="arrow">&rarr;</span> <span class="model">[Haiku]</span> <span class="fn">triage_email(email, family_context)</span>
+        <span class="arrow">&rarr;</span> returns bool <span class="note">(parsed via startswith("RELEVANT"), ~80% rejected here)</span>
+    <span class="arrow">&rarr;</span> <span class="model">[Sonnet]</span> <span class="fn">extract_from_email(session, family_id, email)</span>
+        <span class="arrow">&rarr;</span> <span class="data">ExtractionResult</span>
+              events: list[<span class="data">ExtractedEvent</span>]  <span class="note">(title, datetime, location, child_names, RSVP, confidence)</span>
+              action_items: list[<span class="data">ExtractedActionItem</span>]  <span class="note">(description, due_date, action_type)</span>
+              learnings: list[<span class="data">ExtractedLearning</span>]  <span class="note">(category, fact, entity_type)</span>
+
+<span class="file">actions/state.py</span>
+  <span class="fn">persist_extraction(session, family_id, result, source, source_ref)</span>
+    <span class="arrow">&rarr;</span> For each event: <span class="fn">dedup.deduplicate_event()</span> &rarr; (Event, is_new)
+    <span class="arrow">&rarr;</span> Link children via fuzzy name matching
+    <span class="arrow">&rarr;</span> confidence &lt; 0.6 &rarr; <code>confirmed_by_caregiver=False</code>
+    <span class="arrow">&rarr;</span> Create ActionItem rows, FamilyLearning rows
+
+<span class="file">ingestion/gmail.py</span> <span class="note">(back in handler)</span>
+  For each new event:
+    <span class="arrow">&rarr;</span> <span class="fn">pending_dal.create_pending_action(type="event_confirmation")</span>
+    <span class="arrow">&rarr;</span> <span class="fn">whatsapp.send_buttons_to_family()</span> <span class="note">(Yes / No buttons)</span>
+
+<span class="note">--- User taps "Yes" ---</span>
+
+<span class="file">ingestion/whatsapp.py</span>
+  button_reply_id decoded &rarr; <span class="fn">classify_intent()</span> &rarr; <span class="data">approval_response</span>
+  <span class="arrow">&rarr;</span> <span class="fn">route_intent()</span> &rarr; <span class="fn">_handle_approval_response()</span>
+      <span class="arrow">&rarr;</span> Confirm event &rarr; <code>confirmed_by_caregiver=True</code>
+      <span class="arrow">&rarr;</span> <span class="fn">outbox_dal.enqueue_gcal_write(operation="create")</span>
+
+<span class="file">actions/gcal_outbox_processor.py</span> <span class="note">(async, 5s poll)</span>
+  <span class="arrow">&rarr;</span> <span class="fn">claim_pending_items()</span> &rarr; <span class="fn">_handle_create()</span>
+  <span class="arrow">&rarr;</span> <span class="fn">gcal.create_calendar_event()</span> &rarr; GCal API insert for each caregiver
+  <span class="arrow">&rarr;</span> Store <code>gcal:{event_id}</code> in event.source_refs</div>
+
+            <div class="flow-mutations">
+                <div class="flow-mutations-title">State mutations</div>
+                <ul>
+                    <li>Event row created (or merged if duplicate)</li>
+                    <li>ActionItem rows created</li>
+                    <li>FamilyLearning rows created (unconfirmed)</li>
+                    <li>PendingAction created, then resolved on approval</li>
+                    <li>GCalOutbox entry created, then marked done after API call</li>
+                    <li>ConversationMemory updated with bot + user messages</li>
+                </ul>
+            </div>
+
+            <div class="flow-output">
+                <div class="flow-output-title">What the user sees</div>
+                <p>WhatsApp message with event details + Yes/No buttons. After approval: confirmation message + event appears on Google Calendar.</p>
+            </div>
+        </div>
+
+        <h2 id="flow-whatsapp">Data Flow: WhatsApp &rarr; Intent Routing</h2>
+        <p>Traces a free-text WhatsApp message through classification and dispatch to a handler.</p>
+
+        <div class="data-flow-section">
+            <div class="flow-title">Trigger</div>
+            <div class="flow-trigger">Meta Cloud API webhook delivers message payload to <code>POST /webhooks/whatsapp</code></div>
+
+            <div class="flow-trace"><span class="file">api/webhooks.py</span>
+  <span class="fn">whatsapp_webhook()</span> &rarr; background task: <span class="fn">_process_whatsapp_message(payload)</span>
+
+<span class="file">ingestion/whatsapp.py</span>
+  <span class="fn">handle_whatsapp_message(session, payload)</span>
+    <span class="arrow">&rarr;</span> <span class="fn">_extract_message_from_payload(payload)</span>
+        <span class="arrow">&rarr;</span> <span class="data">{sender_phone, text, button_reply_id, document, sender_name}</span>
+    <span class="arrow">&rarr;</span> Look up family by sender phone (or group_id)
+    <span class="arrow">&rarr;</span> Look up or create Caregiver
+
+    <span class="note">--- Guard: not onboarded? ---</span>
+    <span class="arrow">&rarr;</span> <span class="fn">agents/onboarding.py: handle_onboarding()</span> &rarr; return welcome message
+
+    <span class="note">--- Guard: ICS document attached? ---</span>
+    <span class="arrow">&rarr;</span> <span class="fn">_handle_ics_upload()</span> &rarr; download &rarr; <span class="fn">ics.process_ics_attachment()</span>
+
+    <span class="arrow">&rarr;</span> <span class="fn">memory_dal.store_message(family_id, text)</span>
+
+<span class="file">extraction/router.py</span>
+  <span class="fn">split_compound_message(message)</span>
+    <span class="arrow">&rarr;</span> If &lt;60 chars or no clause signals: return [message]
+    <span class="arrow">&rarr;</span> Else: <span class="model">[Haiku]</span> split into single-intent statements &rarr; <span class="data">list[str]</span>
+
+  For each statement:
+    <span class="fn">classify_intent(session, family_id, statement, sender_id, button_reply_id)</span>
+      <span class="arrow">&rarr;</span> Button reply? Decode directly &rarr; <span class="data">IntentResult(confidence=1.0)</span>
+      <span class="arrow">&rarr;</span> Pending approval check (yes/no/edit prefix matching)
+      <span class="arrow">&rarr;</span> Build context: pending actions + last 10 messages
+      <span class="arrow">&rarr;</span> <span class="model">[Haiku]</span> classify &rarr; parse response &rarr; <span class="data">IntentResult</span>
+            <span class="note">(intent: IntentType, confidence: float, extracted_params: dict)</span>
+
+    <span class="fn">route_intent(session, family_id, intent, statement, sender_id)</span>
+      <span class="arrow">&rarr;</span> Dispatch to handler &rarr; returns <span class="data">str</span> (response text)</div>
+
+            <h4>Intent Type &rarr; Handler Mapping</h4>
+            <div class="intent-grid">
+                <div class="intent-item">
+                    <div class="intent-name">add_event</div>
+                    <div class="intent-handler">&rarr; calendar.handle_schedule()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">query_schedule</div>
+                    <div class="intent-handler">&rarr; calendar.handle_query()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">modify_event</div>
+                    <div class="intent-handler">&rarr; _handle_modify_event()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">cancel_event</div>
+                    <div class="intent-handler">&rarr; _handle_cancel_event()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">assign_transport</div>
+                    <div class="intent-handler">&rarr; calendar.handle_assignment_claim()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">release_transport</div>
+                    <div class="intent-handler">&rarr; _handle_release_transport()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">approval_response</div>
+                    <div class="intent-handler">&rarr; _handle_approval_response()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">event_update</div>
+                    <div class="intent-handler">&rarr; _handle_event_update()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">rsvp_response</div>
+                    <div class="intent-handler">&rarr; _handle_rsvp_response()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">share_info</div>
+                    <div class="intent-handler">&rarr; _handle_share_info()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">set_preference</div>
+                    <div class="intent-handler">&rarr; _handle_set_preference()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">correct_learning</div>
+                    <div class="intent-handler">&rarr; _handle_correct_learning()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">general_question</div>
+                    <div class="intent-handler">&rarr; _handle_general_question()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">greeting</div>
+                    <div class="intent-handler">&rarr; _handle_greeting()</div>
+                </div>
+                <div class="intent-item">
+                    <div class="intent-name">unknown</div>
+                    <div class="intent-handler">&rarr; _handle_unknown()</div>
+                </div>
+            </div>
+
+            <div class="flow-output">
+                <div class="flow-output-title">What the user sees</div>
+                <p>Combined response text from all classified intents, sent as a WhatsApp reply.</p>
+            </div>
+        </div>
+
+        <h2 id="flow-gcal">Data Flow: GCal Sync</h2>
+        <p>Three distinct sub-flows handle the bidirectional sync between Radar's local DB and Google Calendar.</p>
+
+        <div class="data-flow-section">
+            <div class="subflow-title">A. Inbound: GCal &rarr; Radar (webhook-driven)</div>
+            <div class="flow-trigger">A user adds/edits/deletes an event directly in Google Calendar. GCal sends push notification to <code>POST /webhooks/gcal</code>.</div>
+
+            <div class="flow-trace"><span class="file">api/webhooks.py</span>
+  <span class="fn">gcal_webhook()</span> &rarr; background task: <span class="fn">_process_gcal_notification(headers, body)</span>
+
+<span class="file">ingestion/gcal.py</span>
+  <span class="fn">handle_gcal_notification(session, headers, body)</span>
+    <span class="arrow">&rarr;</span> Extract X-Goog-Channel-ID from headers
+    <span class="arrow">&rarr;</span> <span class="fn">_get_caregiver_by_channel(session, channel_id)</span>
+    <span class="arrow">&rarr;</span> resource_state == "sync" &rarr; acknowledge, return <span class="note">(initial handshake)</span>
+    <span class="arrow">&rarr;</span> <span class="fn">fetch_calendar_changes(session, caregiver)</span> &rarr; <span class="data">list[gcal_event dict]</span>
+
+<span class="file">extraction/calendar.py</span>
+  For each gcal_event:
+    <span class="fn">process_calendar_change(session, family_id, gcal_event, caregiver_id)</span>
+      <span class="arrow">&rarr;</span> status == "cancelled"? &rarr; <span class="fn">_handle_cancellation()</span> &rarr; soft-delete Event
+      <span class="arrow">&rarr;</span> Existing event (by source_ref gcal:{id})? &rarr; <span class="fn">_handle_update()</span> &rarr; diff fields, update
+      <span class="arrow">&rarr;</span> New? &rarr; <span class="fn">_handle_new_event()</span> &rarr; dedup check &rarr; create Event
+
+<span class="note">No WhatsApp notification sent (user already knows about their own GCal changes)</span></div>
+
+            <div class="subflow-title">B. Outbound: Radar &rarr; GCal (outbox-driven)</div>
+            <div class="flow-trigger">Any handler that creates or updates an event enqueues a GCal write via the outbox. Never calls GCal API directly.</div>
+
+            <div class="flow-trace"><span class="file">state/outbox.py</span>
+  <span class="fn">enqueue_gcal_write(family_id, event_id, operation, payload, idempotency_key)</span>
+    <span class="arrow">&rarr;</span> Idempotency key format: <code>create:{event_id}</code> or <code>patch:{gcal_id}:{timestamp_ms}</code>
+    <span class="arrow">&rarr;</span> Returns <span class="data">GcalOutboxItem</span> or None (if duplicate key)
+
+<span class="file">actions/gcal_outbox_processor.py</span> <span class="note">(long-running background loop)</span>
+  <span class="fn">process_outbox_loop()</span> &rarr; polls every 5 seconds
+    <span class="arrow">&rarr;</span> <span class="fn">claim_pending_items(batch_size=10)</span> <span class="note">(SELECT FOR UPDATE SKIP LOCKED)</span>
+    <span class="arrow">&rarr;</span> For each item:
+        operation == create &rarr; <span class="fn">gcal.create_calendar_event()</span>
+        operation == update &rarr; <span class="fn">gcal.update_calendar_event()</span>
+        operation == patch  &rarr; <span class="fn">gcal.patch_calendar_event()</span>
+        operation == delete &rarr; <span class="fn">gcal.delete_calendar_event()</span>
+    <span class="arrow">&rarr;</span> Success: <span class="fn">mark_done()</span>
+    <span class="arrow">&rarr;</span> Failure: <span class="fn">mark_failed(error)</span> &rarr; exponential backoff
+        <span class="note">30s &rarr; 120s &rarr; 480s &rarr; 1920s &rarr; 7200s (max 5 retries)</span>
+
+<span class="file">actions/gcal.py</span>
+  <span class="fn">create_calendar_event(session, family_id, event)</span>
+    <span class="arrow">&rarr;</span> <span class="fn">event_to_gcal_body(event, caregiver_map)</span> <span class="note">(includes transport section)</span>
+    <span class="arrow">&rarr;</span> For each caregiver with Google tokens:
+        <span class="arrow">&rarr;</span> GCal API <code>.events().insert()</code> &rarr; gcal_event_id
+        <span class="arrow">&rarr;</span> Store <code>gcal:{gcal_event_id}</code> in event.source_refs</div>
+
+            <div class="subflow-title">C. Reconciliation: Periodic bidirectional sync</div>
+            <div class="flow-trigger">Cloud Scheduler triggers <code>POST /internal/reconcile</code> (configurable interval, default 60 min)</div>
+
+            <div class="flow-trace"><span class="file">actions/gcal_reconciler.py</span>
+  <span class="fn">reconcile_family(session, family_id)</span>
+    <span class="arrow">&rarr;</span> Fetch all events from GCal API for each caregiver
+    <span class="arrow">&rarr;</span> Compare against local Event Registry
+
+    Case 1: Local event has GCal ID but missing in GCal
+      <span class="arrow">&rarr;</span> Soft-delete locally (set cancelled_at)
+
+    Case 2: GCal event with no local match
+      <span class="arrow">&rarr;</span> Dedup check &rarr; import as new Event
+
+    Case 3: Both exist with discrepancies
+      <span class="arrow">&rarr;</span> If <code>source=calendar</code>: <span class="note">GCal wins</span> (update local from GCal)
+      <span class="arrow">&rarr;</span> Else: <span class="note">local DB wins</span> (enqueue outbox update to push to GCal)
+
+    Returns: <span class="data">{created, updated, cancelled, pushed, skipped}</span></div>
+        </div>
+
+        <h2 id="flow-transport">Data Flow: Transport Coordination</h2>
+        <p>How transport assignments are determined, claimed, and tracked across events.</p>
+
+        <div class="data-flow-section">
+            <div class="subflow-title">A. Automatic defaults (on event creation)</div>
+            <div class="flow-trace"><span class="file">agents/calendar.py</span>
+  <span class="fn">populate_transport_defaults(session, family_id, event)</span>
+
+    <span class="note">--- Gate checks (skip if ANY fail) ---</span>
+    <span class="arrow">&rarr;</span> family.children is empty? &rarr; <span class="note">skip (no children)</span>
+    <span class="arrow">&rarr;</span> event.child_id is NULL? &rarr; <span class="note">skip (not a child event)</span>
+    <span class="arrow">&rarr;</span> len(active_caregivers) &lt; 2? &rarr; auto-assign single caregiver silently
+
+    <span class="note">--- Apply recurring schedule defaults ---</span>
+    <span class="arrow">&rarr;</span> <span class="fn">schedules_dal.get_active_schedules_for_family()</span>
+    <span class="arrow">&rarr;</span> Match event to schedule by activity name + day_of_week
+    <span class="arrow">&rarr;</span> If match: apply schedule.default_drop_off + schedule.default_pick_up
+
+    <span class="note">--- Check sibling conflicts ---</span>
+    <span class="arrow">&rarr;</span> <span class="fn">detect_sibling_transport_conflicts(session, family_id, event)</span>
+        <span class="arrow">&rarr;</span> Same caregiver assigned to overlapping events (&plusmn;30min)
+           for different children at different locations
+        <span class="arrow">&rarr;</span> If conflict found: <span class="fn">whatsapp.send_to_family(conflict_alert)</span>
+        <span class="arrow">&rarr;</span> <span class="note">Conflicts flagged, not resolved. No auto-swap.</span></div>
+
+            <div class="subflow-title">B. Manual claim (via WhatsApp)</div>
+            <div class="flow-trace">User: "I'll do pickup for soccer"
+
+<span class="file">extraction/router.py</span>
+  <span class="fn">classify_intent()</span> &rarr; <span class="data">assign_transport</span>
+  <span class="fn">route_intent()</span> &rarr; <span class="fn">calendar.handle_assignment_claim()</span>
+
+<span class="file">agents/calendar.py</span>
+  <span class="fn">handle_assignment_claim(session, family_id, message, sender_id)</span>
+    <span class="arrow">&rarr;</span> <span class="model">[Sonnet]</span> Extract &rarr; <span class="data">ExtractedBulkAssignment</span>
+          scope: 'single' | 'specific' | 'all'
+          role: 'drop_off' | 'pick_up' | 'both'
+          assigned_caregiver, assignments[]
+    <span class="arrow">&rarr;</span> Resolve target events (fuzzy child match + date/event hints)
+    <span class="arrow">&rarr;</span> <span class="fn">_apply_single_assignment()</span> per event
+        <span class="arrow">&rarr;</span> Update event.drop_off_by / event.pick_up_by
+        <span class="arrow">&rarr;</span> Enqueue GCal outbox update
+        <span class="arrow">&rarr;</span> Check sibling transport conflicts
+    <span class="arrow">&rarr;</span> Notify other caregivers
+
+    <span class="note">--- Routine inference ---</span>
+    <span class="arrow">&rarr;</span> Track claim: (recurring_schedule_id, day_of_week, role, caregiver_id)
+    <span class="arrow">&rarr;</span> After 3 consistent claims by same caregiver:
+        <span class="arrow">&rarr;</span> <span class="fn">learning_dal.create_learning(category="transport_routine")</span>
+        <span class="arrow">&rarr;</span> <span class="note">Unconfirmed. Confirmed via weekly summary (no correction = accepted).</span>
+        <span class="arrow">&rarr;</span> Once confirmed: update RecurringSchedule defaults</div>
+
+            <div class="subflow-title">C. Transport swap</div>
+            <div class="flow-trace">User: "I can't do pickup Thursday"
+
+<span class="arrow">&rarr;</span> <span class="fn">classify_intent()</span> &rarr; <span class="data">release_transport</span>
+<span class="arrow">&rarr;</span> Clear THIS event's assignment (drop_off_by / pick_up_by = NULL)
+<span class="arrow">&rarr;</span> <span class="note">RecurringSchedule default left intact for future weeks</span>
+<span class="arrow">&rarr;</span> Notify other caregivers: "Thursday pickup for soccer is unclaimed"</div>
+        </div>
+
+        <h2 id="flow-learning">Data Flow: Learning Lifecycle</h2>
+        <p>How Radar silently learns about a family and gradually promotes facts to structured data.</p>
+
+        <div class="data-flow-section">
+            <h4>State progression</h4>
+            <div class="state-diagram">
+                <div class="state-node active">Unconfirmed</div>
+                <div class="state-arrow">&rarr;</div>
+                <div class="state-node">Surfaced</div>
+                <div class="state-arrow">&rarr;</div>
+                <div class="state-node">Confirmed</div>
+                <div class="state-arrow">&rarr;</div>
+                <div class="state-node">Graduated</div>
+            </div>
+            <div class="state-diagram">
+                <div class="state-node">Confirmed</div>
+                <div class="state-arrow">&rarr;</div>
+                <div class="state-node" style="border-color: #f85149; color: #f85149;">Superseded</div>
+                <span style="color: #8b949e; font-size: 0.85em; margin-left: 8px;">(user corrected &rarr; new learning created)</span>
+            </div>
+
+            <div class="flow-trace"><span class="note">--- CREATION (multiple sources) ---</span>
+
+Email extraction:
+  <span class="fn">extract_from_email()</span> &rarr; <span class="data">ExtractedLearning(category, fact, entity_type)</span>
+  <span class="fn">persist_extraction()</span> &rarr; <span class="fn">learning_dal.create_learning()</span>
+  <span class="note">State: unconfirmed, surfaced_in_summary=False</span>
+
+Manual share_info:
+  User: "Emma goes to Lincoln Elementary"
+  <span class="fn">classify_intent()</span> &rarr; share_info &rarr; <span class="fn">_handle_share_info()</span>
+  <span class="fn">learning_dal.create_learning(category="child_school", fact="Lincoln Elementary")</span>
+
+Transport routine (3x consistent):
+  After 3 matching claims &rarr; <span class="fn">create_learning(category="transport_routine")</span>
+
+<span class="note">--- SURFACING (weekly summary) ---</span>
+
+<span class="file">agents/reminders.py</span>
+  <span class="fn">generate_weekly_summary(family_id)</span>
+    <span class="arrow">&rarr;</span> <span class="fn">learning_dal.get_unsurfaced_learnings()</span>
+    <span class="arrow">&rarr;</span> Include in summary: "Here's what I've learned..."
+    <span class="arrow">&rarr;</span> <span class="fn">learning_dal.mark_surfaced(learning_ids)</span>
+    <span class="note">State: surfaced_in_summary=True, confirmed=False</span>
+
+<span class="note">--- CONFIRMATION (next weekly summary, no correction) ---</span>
+
+  <span class="fn">generate_weekly_summary(family_id)</span> <span class="note">(NEXT RUN, 7 days later)</span>
+    <span class="arrow">&rarr;</span> <span class="fn">learning_dal.auto_confirm_previously_surfaced()</span>
+        <span class="arrow">&rarr;</span> Query: surfaced=True AND confirmed=False AND not corrected
+        <span class="arrow">&rarr;</span> Set confirmed=True for all matching
+    <span class="note">State: confirmed=True (now appears in prompt context as "known fact")</span>
+
+<span class="note">--- GRADUATION (promoted to structured tables) ---</span>
+
+  <span class="fn">_graduate_confirmed_learnings(family_id, learning_ids)</span>
+    <span class="arrow">&rarr;</span> category == "child_school" &rarr; update <code>Child.school</code>
+    <span class="arrow">&rarr;</span> category == "child_activity" &rarr; append to <code>Child.activities</code>
+    <span class="arrow">&rarr;</span> category == "child_friend" &rarr; create <code>ChildFriend</code> row
+    <span class="arrow">&rarr;</span> category == "contact" &rarr; update <code>ChildFriend.parent_contact</code>
+    <span class="arrow">&rarr;</span> Set <code>graduated=True</code>
+
+<span class="note">--- CORRECTION (user disagrees) ---</span>
+
+  User: "Actually Emma goes to Roosevelt Elementary"
+  <span class="fn">classify_intent()</span> &rarr; correct_learning
+  <span class="fn">_handle_correct_learning()</span>
+    <span class="arrow">&rarr;</span> <span class="fn">learning_dal.supersede_learning(old_id, new_fact)</span>
+        <span class="arrow">&rarr;</span> old_learning.superseded_by = new_learning.id
+        <span class="arrow">&rarr;</span> New learning created (unconfirmed, starts cycle over)</div>
+        </div>
+
+        <h2 id="flow-digests">Data Flow: Digests &amp; Reminders</h2>
+        <p>Three notification tiers triggered by Cloud Scheduler.</p>
+
+        <div class="data-flow-section">
+            <div class="subflow-title">A. Daily Digest (skips empty days)</div>
+            <div class="flow-trigger">Cloud Scheduler &rarr; <code>POST /internal/digest/daily</code> (fires at each family's configured <code>daily_digest_time</code>)</div>
+
+            <div class="flow-trace"><span class="file">api/internal.py</span>
+  Loop all families with <code>onboarding_complete=True</code>
+
+<span class="file">agents/reminders.py</span>
+  <span class="fn">generate_daily_digest(session, family_id)</span>
+    <span class="arrow">&rarr;</span> <span class="fn">events_dal.get_upcoming_events(today)</span> &rarr; today's events
+    <span class="arrow">&rarr;</span> <span class="fn">events_dal.get_action_items_due_soon(48h)</span> &rarr; approaching deadlines
+    <span class="arrow">&rarr;</span> Find events with unclaimed transport in next 48h
+    <span class="arrow">&rarr;</span> <span class="note">Nothing actionable? Return None (skip this family)</span>
+    <span class="arrow">&rarr;</span> <span class="model">[Sonnet]</span> Format into natural language summary
+    <span class="arrow">&rarr;</span> Returns <span class="data">str</span>
+
+  <span class="fn">check_immediate_triggers(session, family_id)</span>
+    <span class="arrow">&rarr;</span> RSVP deadline &lt; 48h &rarr; urgent alert
+    <span class="arrow">&rarr;</span> Unclaimed transport &lt; 48h &rarr; nudge
+    <span class="arrow">&rarr;</span> Unclaimed transport &lt; 4h &rarr; "TODAY" urgency tier
+    <span class="arrow">&rarr;</span> Returns <span class="data">list[str]</span>
+
+<span class="file">actions/whatsapp.py</span>
+  <span class="fn">send_daily_digest(family_id, digest_text)</span>
+    <span class="arrow">&rarr;</span> Try template <code>daily_digest</code> first
+    <span class="arrow">&rarr;</span> Fallback to free-form (if within 24h window)</div>
+
+            <div class="subflow-title">B. Weekly Summary (always fires)</div>
+            <div class="flow-trigger">Cloud Scheduler &rarr; <code>POST /internal/digest/weekly</code> (fires on each family's configured <code>weekly_summary_day</code>, typically Sunday)</div>
+
+            <div class="flow-trace"><span class="file">agents/reminders.py</span>
+  <span class="fn">generate_weekly_summary(session, family_id)</span>
+
+    <span class="note">--- Step 1: Confirm last week's learnings ---</span>
+    <span class="arrow">&rarr;</span> <span class="fn">learning_dal.auto_confirm_previously_surfaced()</span>
+        <span class="arrow">&rarr;</span> Learnings shown last week but not corrected &rarr; confirmed=True
+
+    <span class="note">--- Step 2: Graduate confirmed learnings ---</span>
+    <span class="arrow">&rarr;</span> <span class="fn">_graduate_confirmed_learnings(family_id, learning_ids)</span>
+        <span class="arrow">&rarr;</span> Promote to structured tables (Child.school, activities, etc.)
+
+    <span class="note">--- Step 3: Gather content ---</span>
+    <span class="arrow">&rarr;</span> <span class="fn">events_dal.get_events_in_range(week_ahead)</span> &rarr; upcoming events
+    <span class="arrow">&rarr;</span> <span class="fn">learning_dal.get_unsurfaced_learnings()</span> &rarr; new things learned
+    <span class="arrow">&rarr;</span> <span class="fn">events_dal.get_events_needing_rsvp()</span> &rarr; pending RSVPs
+
+    <span class="note">--- Step 4: Format &amp; send ---</span>
+    <span class="arrow">&rarr;</span> <span class="model">[Sonnet]</span> Format summary
+    <span class="arrow">&rarr;</span> <span class="fn">learning_dal.mark_surfaced(new_learning_ids)</span>
+    <span class="arrow">&rarr;</span> <span class="fn">whatsapp.send_weekly_summary()</span></div>
+        </div>
+
+        <!-- ============ COMPONENT REFERENCE ============ -->
+
+        <h2 id="component-ref">Component Reference</h2>
+        <p>Quick lookup table for tracing data through the system. Shows each module's key functions, what data goes in/out, and what it calls.</p>
+
+        <h3>Ingestion Layer</h3>
+        <table class="component-table">
+            <thead>
+                <tr><th>Module</th><th>Key Functions</th><th>Input</th><th>Output</th><th>Calls</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>ingestion/gmail.py</td>
+                    <td>handle_gmail_notification</td>
+                    <td>Pub/Sub payload (emailAddress, historyId)</td>
+                    <td>None (side effects)</td>
+                    <td>email.process_email, ics.process_ics_attachment, state.persist_extraction, whatsapp.send_buttons</td>
+                </tr>
+                <tr>
+                    <td>ingestion/gcal.py</td>
+                    <td>handle_gcal_notification, fetch_calendar_changes</td>
+                    <td>Headers (Channel-ID), body</td>
+                    <td>None (side effects)</td>
+                    <td>calendar.process_calendar_change</td>
+                </tr>
+                <tr>
+                    <td>ingestion/whatsapp.py</td>
+                    <td>handle_whatsapp_message</td>
+                    <td>Meta Cloud API payload</td>
+                    <td>str (response text)</td>
+                    <td>router.split_compound_message, router.classify_intent, router.route_intent, onboarding, ics</td>
+                </tr>
+                <tr>
+                    <td>ingestion/forward.py</td>
+                    <td>handle_forwarded_email</td>
+                    <td>Inbound email payload</td>
+                    <td>None (side effects)</td>
+                    <td>email.process_email, ics.process_ics_attachment, state.persist_extraction</td>
+                </tr>
+                <tr>
+                    <td>ingestion/ics.py</td>
+                    <td>process_ics_attachment, poll_ics_feeds, parse_ics_feed</td>
+                    <td>ICS content string</td>
+                    <td>list[(Event, is_new)]</td>
+                    <td>dedup.deduplicate_event, events_dal</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Extraction Layer</h3>
+        <table class="component-table">
+            <thead>
+                <tr><th>Module</th><th>Key Functions</th><th>Input</th><th>Output</th><th>Calls</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>extraction/email.py</td>
+                    <td>process_email, triage_email, extract_from_email</td>
+                    <td>EmailContent, family_id</td>
+                    <td>ExtractionResult (events[], items[], learnings[])</td>
+                    <td>llm.classify [Haiku], llm.extract [Sonnet], context.build_family_context</td>
+                </tr>
+                <tr>
+                    <td>extraction/calendar.py</td>
+                    <td>process_calendar_change, gcal_event_to_radar_event</td>
+                    <td>gcal_event dict, family_id</td>
+                    <td>dict (change_type, event_id, notification)</td>
+                    <td>events_dal.find_duplicate_event, events_dal.create_event</td>
+                </tr>
+                <tr>
+                    <td>extraction/router.py</td>
+                    <td>classify_intent, route_intent, split_compound_message</td>
+                    <td>message text, family_id, sender_id</td>
+                    <td>IntentResult, response str</td>
+                    <td>llm.classify [Haiku], all intent handlers, memory_dal, pending_dal</td>
+                </tr>
+                <tr>
+                    <td>extraction/dedup.py</td>
+                    <td>deduplicate_event</td>
+                    <td>ExtractedEvent, family_id</td>
+                    <td>tuple(Event, is_new)</td>
+                    <td>events_dal.find_duplicate_event (&plusmn;30min + title &gt;0.7), events_dal.create_event</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Reasoning Layer</h3>
+        <table class="component-table">
+            <thead>
+                <tr><th>Module</th><th>Key Functions</th><th>Input</th><th>Output</th><th>Calls</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>agents/calendar.py</td>
+                    <td>handle_schedule, handle_query, handle_update, handle_assignment_claim</td>
+                    <td>family_id, message, sender_id</td>
+                    <td>str (response text)</td>
+                    <td>llm.extract [Sonnet], events_dal, outbox_dal, children_dal, schedules_dal, memory_dal</td>
+                </tr>
+                <tr>
+                    <td>agents/reminders.py</td>
+                    <td>generate_daily_digest, generate_weekly_summary, check_immediate_triggers</td>
+                    <td>family_id</td>
+                    <td>str or None (digest text)</td>
+                    <td>events_dal, learning_dal, llm.generate [Sonnet]</td>
+                </tr>
+                <tr>
+                    <td>agents/onboarding.py</td>
+                    <td>handle_onboarding</td>
+                    <td>family_id, message, sender_id</td>
+                    <td>str (response text)</td>
+                    <td>llm.extract, children_dal, families_dal</td>
+                </tr>
+                <tr>
+                    <td>agents/context.py</td>
+                    <td>build_family_context</td>
+                    <td>family_id, caregiver_id (optional)</td>
+                    <td>dict (family, children, upcoming, learnings, prefs, timezone)</td>
+                    <td>families_dal, children_dal, events_dal, learning_dal, preferences_dal</td>
+                </tr>
+                <tr>
+                    <td>agents/recurrence_detector.py</td>
+                    <td>detect_recurring_pattern</td>
+                    <td>family_id, new_event</td>
+                    <td>RecurrenceCandidate or None</td>
+                    <td>events_dal (60-day window, title similarity &ge;0.7)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Action Layer</h3>
+        <table class="component-table">
+            <thead>
+                <tr><th>Module</th><th>Key Functions</th><th>Input</th><th>Output</th><th>Calls</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>actions/state.py</td>
+                    <td>persist_extraction</td>
+                    <td>ExtractionResult, family_id, source</td>
+                    <td>list[Event]</td>
+                    <td>dedup.deduplicate_event, events_dal, learning_dal, children_dal</td>
+                </tr>
+                <tr>
+                    <td>actions/gcal.py</td>
+                    <td>create/update/delete_calendar_event, event_to_gcal_body, setup_gcal_watch</td>
+                    <td>Event, family_id</td>
+                    <td>list[gcal_event_id]</td>
+                    <td>Google Calendar API v3, auth/google_client</td>
+                </tr>
+                <tr>
+                    <td>actions/gcal_outbox_processor.py</td>
+                    <td>process_outbox_loop</td>
+                    <td>(polls DB every 5s)</td>
+                    <td>GCal API calls</td>
+                    <td>outbox_dal.claim_pending_items, gcal.create/update/delete, outbox_dal.mark_done/failed</td>
+                </tr>
+                <tr>
+                    <td>actions/gcal_reconciler.py</td>
+                    <td>reconcile_family, reconcile_all_families</td>
+                    <td>family_id</td>
+                    <td>stats dict (created, updated, cancelled, pushed)</td>
+                    <td>gcal.list_upcoming_events_from_gcal, events_dal, outbox_dal</td>
+                </tr>
+                <tr>
+                    <td>actions/whatsapp.py</td>
+                    <td>send_to_family, send_buttons_to_family, send_template_to_family, send_daily_digest, send_weekly_summary</td>
+                    <td>family_id, message text</td>
+                    <td>None (sends to all caregivers)</td>
+                    <td>whatsapp_client (Meta Cloud API)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>State Layer (DAL)</h3>
+        <table class="component-table">
+            <thead>
+                <tr><th>Module</th><th>Key Functions</th><th>Purpose</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>state/events.py</td>
+                    <td>create_event, get_upcoming_events, get_events_in_range, find_duplicate_event, create_action_item, get_action_items_due_soon, get_events_needing_rsvp</td>
+                    <td>Event Registry CRUD + queries. Dedup uses token-based Jaccard similarity.</td>
+                </tr>
+                <tr>
+                    <td>state/outbox.py</td>
+                    <td>enqueue_gcal_write, claim_pending_items, mark_done, mark_failed, cancel_pending_for_event</td>
+                    <td>GCal write queue. FOR UPDATE SKIP LOCKED for concurrent safety. Idempotency keys prevent duplicates.</td>
+                </tr>
+                <tr>
+                    <td>state/families.py</td>
+                    <td>get_family, get_caregivers_for_family, get_caregiver_by_email, get_families_with_google, update_caregiver_google_tokens</td>
+                    <td>Family and caregiver queries. Watch channel tracking for renewal.</td>
+                </tr>
+                <tr>
+                    <td>state/memory.py</td>
+                    <td>store_message, get_recent_messages, cleanup_expired</td>
+                    <td>Short-term conversation context (last 10-20 messages). TTL-based expiry.</td>
+                </tr>
+                <tr>
+                    <td>state/learning.py</td>
+                    <td>create_learning, get_unsurfaced_learnings, mark_surfaced, auto_confirm_previously_surfaced, get_confirmed_learnings, graduate_learning, supersede_learning</td>
+                    <td>Full learning lifecycle. Filters out graduated/superseded for prompt context.</td>
+                </tr>
+                <tr>
+                    <td>state/schedules.py</td>
+                    <td>create_recurring_schedule, get_active_schedules_for_family, update_schedule_defaults, create_schedule_exception</td>
+                    <td>Recurring patterns with transport defaults. Exceptions modify individual instances only.</td>
+                </tr>
+                <tr>
+                    <td>state/pending.py</td>
+                    <td>create_pending_action, get_active_pending, resolve_pending, update_draft</td>
+                    <td>SUGGEST-mode approval queue. Tracks edit history. Auto-expires stale actions.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- ============ EXISTING SECTIONS (unchanged) ============ -->
 
         <!-- 4. Suggest UX: 5 Interaction Patterns -->
         <h2 id="suggest-ux">Suggest UX: 5 Interaction Patterns</h2>
@@ -926,9 +1902,9 @@
             <div class="pattern-title">Type 1: Binary Approval</div>
             <div class="pattern-desc">Simple yes/no decisions with no content to review</div>
             <div class="chat-mockup">
-                <div class="chat-bot">Bot: New invite: Sophia's 7th Birthday<br/>📅 March 28, 2–4pm @ JumpZone<br/>RSVP needed by March 25. Add to calendar?</div>
+                <div class="chat-bot">Bot: New invite: Sophia's 7th Birthday<br/>March 28, 2-4pm @ JumpZone<br/>RSVP needed by March 25. Add to calendar?</div>
                 <div class="chat-caregiver">Caregiver: yes</div>
-                <div class="chat-bot">Bot: Done — added to all calendars ✓</div>
+                <div class="chat-bot">Bot: Done — added to all calendars</div>
             </div>
         </div>
 
@@ -940,7 +1916,7 @@
                 <div class="chat-caregiver">Caregiver: make it warmer, add that she's excited</div>
                 <div class="chat-bot">Bot: Updated:<br/>"Hi! Emma is SO excited for Sophia's party — she's<br/>been counting down the days! See you on the 28th! — Sarah"</div>
                 <div class="chat-caregiver">Caregiver: send it</div>
-                <div class="chat-bot">Bot: Sent ✓</div>
+                <div class="chat-bot">Bot: Sent</div>
             </div>
         </div>
 
@@ -948,7 +1924,7 @@
             <div class="pattern-title">Type 3: Options</div>
             <div class="pattern-desc">Caregiver picks from multiple choices</div>
             <div class="chat-mockup">
-                <div class="chat-bot">Bot: Gift ideas for Sophia (turning 7, ~$30–40):<br/><br/>1. Melissa &amp; Doug art kit — $35<br/>2. National Geographic science kit — $32<br/>3. Creativity for Kids jewelry set — $28<br/><br/>Reply with a number, or say "more ideas"</div>
+                <div class="chat-bot">Bot: Gift ideas for Sophia (turning 7, ~$30-40):<br/><br/>1. Melissa &amp; Doug art kit — $35<br/>2. National Geographic science kit — $32<br/>3. Creativity for Kids jewelry set — $28<br/><br/>Reply with a number, or say "more ideas"</div>
                 <div class="chat-caregiver">Caregiver: 2</div>
                 <div class="chat-bot">Bot: Added to prep checklist: National Geographic science kit<br/>Amazon link: [link]</div>
             </div>
@@ -961,7 +1937,7 @@
                 <div class="chat-bot">Bot: Jake has soccer Saturday at 3pm (Westfield Fields)<br/>and Emma has piano at 3:30pm downtown — same time,<br/>different places.<br/><br/>Who's taking Jake? Who's taking Emma?</div>
                 <div class="chat-caregiver">Caregiver 1: I'll take Jake</div>
                 <div class="chat-caregiver">Caregiver 2: I got Emma</div>
-                <div class="chat-bot">Bot: Got it — Sarah: Jake's soccer. Mike: Emma's piano.<br/>Added to both events ✓</div>
+                <div class="chat-bot">Bot: Got it — Sarah: Jake's soccer. Mike: Emma's piano.<br/>Added to both events</div>
             </div>
         </div>
 
@@ -969,7 +1945,7 @@
             <div class="pattern-title">Type 5: Deadline Urgency</div>
             <div class="pattern-desc">Time-sensitive action needed. Bot surfaces link at right moment and follows up</div>
             <div class="chat-mockup">
-                <div class="chat-bot">Bot: ⚠️ Camp Thunderbird registration closes tomorrow.<br/><br/>Emma: age 9 ✓  Dates: July 7–18 ✓  Cost: $450<br/><br/>Want the registration link? Or I can remind you<br/>tomorrow morning.</div>
+                <div class="chat-bot">Bot: Camp Thunderbird registration closes tomorrow.<br/><br/>Emma: age 9  Dates: July 7-18  Cost: $450<br/><br/>Want the registration link? Or I can remind you<br/>tomorrow morning.</div>
                 <div class="chat-caregiver">Caregiver: send me the link</div>
                 <div class="chat-bot">Bot: Here: [registration link]<br/>I'll remind you at 9am if it's not done.</div>
             </div>
@@ -980,11 +1956,11 @@
         <p>Fully conversational. Web UI exists only for Google OAuth token exchange. Completes in 3 exchanges maximum:</p>
 
         <div class="chat-mockup">
-            <div class="chat-bot">Bot: 👋 Hi! I'm Radar, your family's activity assistant.<br/>Quick setup — what are your kids' names and ages?</div>
+            <div class="chat-bot">Bot: Hi! I'm Radar, your family's activity assistant.<br/>Quick setup — what are your kids' names and ages?</div>
             <div class="chat-caregiver">Caregiver: Emma, 9 and Jake, 7</div>
             <div class="chat-bot">Bot: Got it — Emma (9) and Jake (7).<br/>I'll send each person in this group a link to connect<br/>your Google calendar and email. That's what lets me<br/>spot events automatically.<br/><br/>Sarah: [OAuth link]<br/>Mike: [OAuth link]<br/><br/>If you'd prefer not to connect your email, you can<br/>also forward things to: family-abc123@radar.app</div>
             <div class="chat-caregiver">Caregiver: Done!</div>
-            <div class="chat-bot">Bot: Both accounts connected ✓<br/>I'll start picking up events from your inboxes.<br/>Tell me anything else about the kids as we go —<br/>I'll learn the rest over time.</div>
+            <div class="chat-bot">Bot: Both accounts connected<br/>I'll start picking up events from your inboxes.<br/>Tell me anything else about the kids as we go —<br/>I'll learn the rest over time.</div>
         </div>
 
         <div class="callout">
@@ -1001,32 +1977,27 @@
         <h2 id="recurring-seasons">Recurring Events and Season Handling</h2>
 
         <h3>Detection</h3>
-        <p><strong>From email:</strong> If email contains explicit season schedule (e.g., "practice every Tuesday/Thursday, March 4 – May 22"), Email Extraction Agent extracts full pattern and creates Season record.</p>
-        <p><strong>From calendar:</strong> If Calendar Change Detector observes 3+ consecutive events with same title, similar time, and location, it infers recurring pattern.</p>
+        <p><strong>From email:</strong> If email contains explicit season schedule (e.g., "practice every Tuesday/Thursday, March 4 – May 22"), Email Extraction Agent extracts full pattern and creates RecurringSchedule record.</p>
+        <p><strong>From calendar:</strong> Recurrence Detector observes 3+ consecutive events with same title, similar time, and same day-of-week in a 60-day window.</p>
 
         <h3>Confirmation</h3>
         <div class="chat-mockup">
-            <div class="chat-bot">Bot: Looks like Jake has soccer practice every Tuesday and<br/>Thursday, 4–5:30pm at Westfield Fields through May 22.<br/>Should I track this as a season?</div>
+            <div class="chat-bot">Bot: Looks like Jake has soccer practice every Tuesday and<br/>Thursday, 4-5:30pm at Westfield Fields through May 22.<br/>Should I track this as a recurring schedule?</div>
             <div class="chat-caregiver">Caregiver: yes</div>
             <div class="chat-bot">Bot: Done — Jake's soccer season tracked through May 22.<br/>I'll manage the schedule and let you know about<br/>any changes.</div>
         </div>
 
         <h3>Exception Handling</h3>
         <ul style="margin-left: 20px; margin-top: 12px;">
-            <li><strong>Cancellation:</strong> Remove instance, log exception. Report in next daily digest</li>
+            <li><strong>Cancellation:</strong> Remove instance, log ScheduleException. Report in next daily digest</li>
             <li><strong>Reschedule:</strong> Update instance datetime, log exception. Check for conflicts at new time</li>
             <li><strong>Location change:</strong> Update instance location. Notify group if transport implications</li>
-            <li><strong>Makeup game/event:</strong> Create new Event instance linked to season. Check for conflicts</li>
-            <li><strong>All exceptions:</strong> Handled silently (no confirmation) and reported in next daily digest</li>
+            <li><strong>Makeup game/event:</strong> Create new Event instance linked to schedule. Check for conflicts</li>
+            <li><strong>All exceptions:</strong> Modify only the individual instance, never the overall pattern</li>
         </ul>
 
-        <h3>Season End</h3>
-        <div class="chat-mockup">
-            <div class="chat-bot">Bot: Jake's soccer season ended this week. Gear to return:<br/>shin guards (borrowed from league). Want me to archive<br/>the season?</div>
-        </div>
-
         <!-- 7. Proactive Gap Detection -->
-        <h2 id="gap-detection">Proactive Gap Detection</h2>
+        <h2 id="gap-detection">Proactive Gap Detection <span class="tag tag-phase3">PHASE 3</span></h2>
         <p>Go beyond reminders for existing events. Identify things the family should be doing but isn't:</p>
 
         <div style="background-color: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 0; margin: 20px 0;">
@@ -1069,63 +2040,52 @@
 
         <div class="callout">
             <div class="callout-title">Implementation</div>
-            <p>Gap detection runs as part of Reminder Engine's daily evaluation job. All gap detection outputs are <span class="tag tag-suggest">SUGGEST</span> mode — they present options and ask, never auto-act.</p>
+            <p>Gap detection runs as part of Reminder Engine's daily evaluation job. All gap detection outputs are <span class="tag tag-suggest">SUGGEST</span> mode — they present options and ask, never auto-act. <em>Not yet implemented — planned for Phase 3.</em></p>
         </div>
 
         <!-- 8. Birthday Party Invite Flow -->
         <h2 id="birthday-flow">Concrete Data Flow: Birthday Party Invite</h2>
-        <p>End-to-end walkthrough from raw email to coordinated family action:</p>
+        <p>End-to-end walkthrough from raw email to coordinated family action. See <a href="#flow-email" style="color: #6366f1;">Flow: Email &rarr; Event Confirmation</a> for the detailed mechanics of each step.</p>
 
         <div class="flow-diagram">
             <div class="flow-step">Email arrives</div>
-            <div class="flow-arrow">→</div>
+            <div class="flow-arrow">&rarr;</div>
             <div class="flow-step">Gmail Push notification</div>
-            <div class="flow-arrow">→</div>
+            <div class="flow-arrow">&rarr;</div>
             <div class="flow-step">Haiku triage (relevant?)</div>
-            <div class="flow-arrow">→</div>
+            <div class="flow-arrow">&rarr;</div>
             <div class="flow-step">Sonnet extraction</div>
-            <div class="flow-arrow">→</div>
+            <div class="flow-arrow">&rarr;</div>
             <div class="flow-step">Event Registry dedup</div>
         </div>
 
         <div class="flow-diagram">
             <div class="flow-step">Extract: Sophia's party</div>
-            <div class="flow-arrow">→</div>
-            <div class="flow-step">Calendar Coordinator checks conflicts</div>
-            <div class="flow-arrow">→</div>
-            <div class="flow-step">Logistics Planner gen prep checklist</div>
-            <div class="flow-arrow">→</div>
-            <div class="flow-step">Research Agent finds gift ideas</div>
+            <div class="flow-arrow">&rarr;</div>
+            <div class="flow-step">Create PendingAction</div>
+            <div class="flow-arrow">&rarr;</div>
+            <div class="flow-step">WhatsApp: Yes/No buttons</div>
+            <div class="flow-arrow">&rarr;</div>
+            <div class="flow-step">Caregiver taps Yes</div>
         </div>
 
         <div class="flow-diagram">
-            <div class="flow-step">Daily digest sent (RSVP deadline + gift ideas)</div>
-            <div class="flow-arrow">→</div>
-            <div class="flow-step">Caregiver approves gift (Type 3 pattern)</div>
-            <div class="flow-arrow">→</div>
-            <div class="flow-step">Bot drafts RSVP email (Type 2 pattern)</div>
-            <div class="flow-arrow">→</div>
-            <div class="flow-step">Caregiver edits + sends</div>
-        </div>
-
-        <div class="flow-diagram">
-            <div class="flow-step">Logistics Planner adds to GCal</div>
-            <div class="flow-arrow">→</div>
-            <div class="flow-step">Asks "Who's taking Emma?"</div>
-            <div class="flow-arrow">→</div>
-            <div class="flow-step">Caregiver claims (Type 4 pattern)</div>
-            <div class="flow-arrow">→</div>
-            <div class="flow-step">Transport assigned ✓</div>
+            <div class="flow-step">Confirm event in DB</div>
+            <div class="flow-arrow">&rarr;</div>
+            <div class="flow-step">Enqueue GCal outbox</div>
+            <div class="flow-arrow">&rarr;</div>
+            <div class="flow-step">Outbox processor creates GCal event</div>
+            <div class="flow-arrow">&rarr;</div>
+            <div class="flow-step">Transport defaults applied</div>
         </div>
 
         <div class="callout">
             <div class="callout-title">Timeline</div>
             <ul style="margin-left: 16px; margin-top: 8px;">
-                <li>Email received → 2 seconds: extraction complete</li>
-                <li>Daily digest sent (morning, or within 24h)</li>
-                <li>Caregiver responds within 24-hour window (free-form conversation)</li>
-                <li>2 days before RSVP deadline: escalated reminder</li>
-                <li>1 day before party: final confirmation checklist</li>
+                <li>Email received &rarr; 2 seconds: extraction complete</li>
+                <li>Caregiver confirms via WhatsApp buttons (or daily digest surfaces it)</li>
+                <li>2 days before RSVP deadline: escalated reminder via immediate trigger</li>
+                <li>1 day before party: transport assignment nudge if unclaimed</li>
             </ul>
         </div>
 
@@ -1155,7 +2115,7 @@
                 <div class="autonomy-notes">Silent learning, weekly summary for review</div>
             </div>
             <div class="autonomy-row">
-                <div class="autonomy-action">Track season schedules &amp; exceptions</div>
+                <div class="autonomy-action">Track recurring schedules &amp; exceptions</div>
                 <div class="autonomy-mode mode-auto">AUTO</div>
                 <div class="autonomy-notes">After initial confirmation</div>
             </div>
@@ -1207,23 +2167,18 @@
         <div style="background-color: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 0; margin: 20px 0;">
             <div class="tech-row">
                 <div class="tech-component">Runtime</div>
-                <div class="tech-choice">Python + FastAPI (async)</div>
+                <div class="tech-choice">Python 3.11+ / FastAPI (async)</div>
                 <div class="tech-notes">Best LLM ecosystem; async for webhook concurrency</div>
             </div>
             <div class="tech-row">
-                <div class="tech-component">Agent framework</div>
-                <div class="tech-choice">LangGraph or Claude Agent SDK</div>
-                <div class="tech-notes">Stateful multi-agent orchestration</div>
-            </div>
-            <div class="tech-row">
-                <div class="tech-component">LLM — triage</div>
+                <div class="tech-component">LLM &mdash; triage</div>
                 <div class="tech-choice">Claude Haiku</div>
-                <div class="tech-notes">Email relevance classification</div>
+                <div class="tech-notes">Email relevance, intent classification, message splitting</div>
             </div>
             <div class="tech-row">
-                <div class="tech-component">LLM — reasoning</div>
+                <div class="tech-component">LLM &mdash; reasoning</div>
                 <div class="tech-choice">Claude Sonnet</div>
-                <div class="tech-notes">Extraction, drafting, intent routing, gap detection</div>
+                <div class="tech-notes">Extraction, event creation, digests, assignment parsing</div>
             </div>
             <div class="tech-row">
                 <div class="tech-component">Database</div>
@@ -1237,13 +2192,13 @@
             </div>
             <div class="tech-row">
                 <div class="tech-component">WhatsApp</div>
-                <div class="tech-choice">Twilio or Meta Cloud API</div>
-                <div class="tech-notes">Template management, webhook delivery</div>
+                <div class="tech-choice">Meta Cloud API</div>
+                <div class="tech-notes">Template management, webhook delivery, 1:1 messages</div>
             </div>
             <div class="tech-row">
-                <div class="tech-component">Voice transcription</div>
-                <div class="tech-choice">Whisper API</div>
-                <div class="tech-notes">WhatsApp voice note → text</div>
+                <div class="tech-component">Voice</div>
+                <div class="tech-choice">Whisper API (Phase 4)</div>
+                <div class="tech-notes">WhatsApp voice note transcription</div>
             </div>
             <div class="tech-row">
                 <div class="tech-component">Hosting</div>
@@ -1252,13 +2207,13 @@
             </div>
             <div class="tech-row">
                 <div class="tech-component">Scheduling</div>
-                <div class="tech-choice">Cloud Scheduler → Pub/Sub</div>
-                <div class="tech-notes">Daily digest, weekly summary, watch renewals</div>
+                <div class="tech-choice">Cloud Scheduler</div>
+                <div class="tech-notes">Daily digest, weekly summary, watch renewals, reconciliation</div>
             </div>
             <div class="tech-row">
                 <div class="tech-component">Auth</div>
                 <div class="tech-choice">Google OAuth 2.0</div>
-                <div class="tech-notes">Per-caregiver, encrypted token storage</div>
+                <div class="tech-notes">Per-caregiver, encrypted token storage (AES-256)</div>
             </div>
             <div class="tech-row">
                 <div class="tech-component">Encryption</div>
@@ -1300,7 +2255,7 @@
             <ul style="margin-left: 16px; margin-top: 8px;">
                 <li>Pub/Sub topics can be shared across tenants; messages include tenant ID for routing</li>
                 <li>GCal/Gmail watch channels are per-caregiver, tracked in Caregiver table</li>
-                <li>WhatsApp webhook endpoint is shared; incoming messages routed by group ID</li>
+                <li>WhatsApp webhook endpoint is shared; incoming messages routed by sender phone lookup</li>
             </ul>
         </div>
 
@@ -1324,12 +2279,12 @@
 
         <div class="risk-item">
             <div class="risk-title">OAuth token expiry cascade</div>
-            <div class="risk-mitigation">If multiple caregivers' tokens expire simultaneously, bot loses ingestion capacity. <strong>Mitigation:</strong> 5-day renewal buffer, per-caregiver re-auth prompts, fallback to forward-to-email for token-expired caregivers</div>
+            <div class="risk-mitigation">If multiple caregivers' tokens expire simultaneously, bot loses ingestion capacity. <strong>Mitigation:</strong> 5-day renewal buffer (watches expire in 7 days, renewed on 5-day intervals), per-caregiver re-auth prompts, fallback to forward-to-email for token-expired caregivers</div>
         </div>
 
         <div class="risk-item">
             <div class="risk-title">Privacy leakage via conversation memory</div>
-            <div class="risk-mitigation">Conversation memory (embeddings, summaries) persists family data. <strong>Mitigation:</strong> Ephemeral processing (raw emails discarded immediately after extraction), conversation memory expires per policy, "Delete our data" command for full tenant purge</div>
+            <div class="risk-mitigation">Conversation memory persists family data. <strong>Mitigation:</strong> Ephemeral processing (raw emails discarded immediately after extraction), conversation memory expires per TTL policy, "Delete our data" command for full tenant purge</div>
         </div>
 
         <div class="risk-item">
@@ -1346,44 +2301,44 @@
         <h2 id="phases">Build Phases</h2>
 
         <div class="phase-section">
-            <div class="phase-title">Phase 1 — Calendar + Conversational Input (4–6 weeks)</div>
+            <div class="phase-title">Phase 1 — Calendar + Conversational Input</div>
             <div class="phase-goal">Validate that caregivers want to interact with a WhatsApp bot for family logistics</div>
             <ul class="phase-list">
                 <li>WhatsApp group bot (basic Intent Router, Calendar Coordinator)</li>
-                <li>Google Calendar integration (webhooks, read/write)</li>
-                <li>Conversational onboarding</li>
+                <li>Google Calendar integration (webhooks, read/write via outbox)</li>
+                <li>Conversational onboarding (3-step)</li>
                 <li>Event creation from conversation ("Add soccer practice Tuesday at 4pm")</li>
                 <li>Daily digest (when actionable) and weekly Sunday summary</li>
                 <li>Basic conflict detection</li>
+                <li>Transport coordination (claims, routines, sibling conflicts)</li>
                 <li>Forward-to email address (receive and store, basic extraction)</li>
             </ul>
         </div>
 
         <div class="phase-section">
-            <div class="phase-title">Phase 2 — Email Ingestion + Extraction (4–6 weeks)</div>
-            <div class="phase-goal">Validate that automatic email → structured events saves meaningful time</div>
+            <div class="phase-title">Phase 2 — Email Ingestion + Extraction</div>
+            <div class="phase-goal">Validate that automatic email &rarr; structured events saves meaningful time</div>
             <ul class="phase-list">
                 <li>Gmail push integration (Pub/Sub)</li>
                 <li>Email Extraction Agent (Haiku triage + Sonnet extraction)</li>
                 <li>ActionItem extraction (forms, payments, items to bring)</li>
-                <li>Event deduplication (email ↔ calendar)</li>
-                <li>ICS feed subscription</li>
-                <li>Voice note transcription</li>
+                <li>Event deduplication (email &harr; calendar)</li>
+                <li>ICS feed subscription and attachment processing</li>
                 <li>Extraction feedback loop (corrections logged)</li>
+                <li>Family learning lifecycle (unconfirmed &rarr; surfaced &rarr; confirmed &rarr; graduated)</li>
+                <li>Recurrence detection (3+ similar events &rarr; RecurringSchedule)</li>
             </ul>
         </div>
 
         <div class="phase-section">
-            <div class="phase-title">Phase 3 — Logistics Intelligence (4–6 weeks)</div>
+            <div class="phase-title">Phase 3 — Logistics Intelligence</div>
             <div class="phase-goal">Differentiate from shared calendar apps. This is where Radar earns its name</div>
             <ul class="phase-list">
-                <li>Logistics Planner Agent (prep checklists, gear tracking, transport coordination)</li>
+                <li>Logistics Planner Agent (prep checklists, gear tracking)</li>
                 <li>Research Agent (gift suggestions, camp discovery)</li>
-                <li>Season detection and management</li>
-                <li>Proactive gap detection</li>
-                <li>Family profile learning (silent + weekly summary)</li>
+                <li>Proactive gap detection (7 rules)</li>
                 <li>Full suggest UX (all 5 interaction patterns)</li>
-                <li>Assignment nudging</li>
+                <li>Assignment nudging with escalation</li>
             </ul>
         </div>
 
@@ -1395,15 +2350,15 @@
                 <li>Crowdsourced carpooling</li>
                 <li>Work calendar free/busy overlay</li>
                 <li>SMS/iMessage ingestion</li>
+                <li>Voice note transcription (Whisper)</li>
                 <li>Budget tracking for kid activities</li>
-                <li>Broader home management (bills, maintenance, errands)</li>
                 <li>Mobile companion app (optional, WhatsApp remains primary)</li>
             </ul>
         </div>
 
         <!-- Footer -->
         <footer>
-            <p>Radar Architecture — Last updated March 19, 2026 | v2 with product design decisions and user research</p>
+            <p>Radar Architecture — Last updated March 24, 2026 | v3 with detailed data flows for brainstorming</p>
         </footer>
     </div>
 </body>
