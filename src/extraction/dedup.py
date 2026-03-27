@@ -22,11 +22,14 @@ async def deduplicate_event(
     extracted_event: ExtractedEvent,
     source: EventSource = EventSource.email,
     source_ref: str | None = None,
+    confirmed: bool = True,
 ) -> tuple[Event, bool]:
     """Check for duplicate event and merge or create.
 
     Returns (event, is_new) where is_new is True if a new event was created,
     False if an existing event was enriched/merged.
+
+    If confirmed=False, newly created events will have confirmed_by_caregiver=False.
     """
     if extracted_event.datetime_start is None:
         raise ValueError(
@@ -43,7 +46,7 @@ async def deduplicate_event(
 
     if existing is not None:
         # Merge: enrich existing event with any new information
-        merged = await _merge_event(session, family_id, existing, extracted_event, source_ref)
+        merged = await _merge_event(session, family_id, existing, extracted_event, source_ref, source=source)
         logger.info(
             "Merged event %s with extracted '%s'",
             merged.id,
@@ -65,6 +68,9 @@ async def deduplicate_event(
     event = await event_dal.create_event(
         session,
         family_id,
+        all_day=getattr(extracted_event, 'all_day', False),
+        time_tbd=getattr(extracted_event, 'time_tbd', False),
+        time_explicit=getattr(extracted_event, 'time_explicit', False),
         source=source,
         source_refs=[source_ref] if source_ref else [],
         type=extracted_event.event_type,
@@ -78,6 +84,7 @@ async def deduplicate_event(
         rsvp_method=rsvp_method,
         rsvp_contact=extracted_event.rsvp_contact,
         extraction_confidence=extracted_event.confidence,
+        confirmed_by_caregiver=confirmed,
     )
     logger.info("Created new event: %s '%s'", event.id, event.title)
     return event, True
@@ -89,15 +96,47 @@ async def _merge_event(
     existing: Event,
     extracted: ExtractedEvent,
     source_ref: str | None,
+    source: EventSource | None = None,
 ) -> Event:
     """Merge extracted data into an existing event, enriching missing fields."""
     updates: dict = {}
+
+    # Auto-confirm unconfirmed event when merging with a GCal-sourced duplicate
+    if not existing.confirmed_by_caregiver and source == EventSource.calendar:
+        updates["confirmed_by_caregiver"] = True
+        logger.info(
+            "Auto-confirmed event %s during merge (calendar source)", existing.id,
+        )
 
     # Add source ref if new
     if source_ref:
         current_refs = existing.source_refs or []
         if source_ref not in current_refs:
             updates["source_refs"] = current_refs + [source_ref]
+
+    # Promote all-day placeholder to timed event when new extraction has a specific time
+    if existing.all_day and not getattr(extracted, 'all_day', False):
+        if extracted.datetime_start:
+            updates["datetime_start"] = extracted.datetime_start
+        if extracted.datetime_end:
+            updates["datetime_end"] = extracted.datetime_end
+        updates["all_day"] = False
+        updates["time_explicit"] = getattr(extracted, 'time_explicit', False)
+        logger.info(
+            "Promoted all-day event %s to timed event", existing.id,
+        )
+
+    # Promote time-TBD event to timed event when new extraction has a specific time
+    if getattr(existing, 'time_tbd', False) and not getattr(extracted, 'time_tbd', False) and not getattr(extracted, 'all_day', False):
+        if extracted.datetime_start:
+            updates["datetime_start"] = extracted.datetime_start
+        if extracted.datetime_end:
+            updates["datetime_end"] = extracted.datetime_end
+        updates["time_tbd"] = False
+        updates["time_explicit"] = getattr(extracted, 'time_explicit', False)
+        logger.info(
+            "Promoted time-TBD event %s to timed event", existing.id,
+        )
 
     # Enrich missing fields — only fill in what the existing event lacks
     if not existing.description and extracted.description:

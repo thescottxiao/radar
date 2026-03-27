@@ -254,6 +254,12 @@ async def simulate_email(
         skip_events=True,
     )
 
+    # Look up family timezone for user-facing formatting
+    from src.state import families as families_dal
+    from src.utils.timezone import fmt_dt, FMT_DATE_SHORT
+    _family = await families_dal.get_family(session, family_id)
+    _family_tz = _family.timezone if _family else "America/New_York"
+
     # For each extracted event: create a pending action and send Yes/No buttons
     events_pending = 0
     for ev in result.events:
@@ -266,7 +272,7 @@ async def simulate_email(
             session,
             family_id=family_id,
             action_type=PendingActionType.event_confirmation,
-            draft_content=f"{ev.title} — {ev.datetime_start.strftime('%b %d, %I:%M %p')}",
+            draft_content=f"{ev.title} — {fmt_dt(ev.datetime_start, _family_tz, '%b %d, %I:%M %p')}",
             context={
                 "event_data": ev.model_dump(mode="json"),
                 "email_subject": request.subject,
@@ -275,7 +281,7 @@ async def simulate_email(
         )
 
         # Build button message
-        time_str = ev.datetime_start.strftime("%b %d, %I:%M %p")
+        time_str = fmt_dt(ev.datetime_start, _family_tz, "%b %d, %I:%M %p")
         body = f"New event from email:\n*{ev.title}*\n{time_str}"
         if ev.location:
             body += f"\n📍 {ev.location}"
@@ -298,7 +304,7 @@ async def simulate_email(
         lines = [f"📧 *{request.subject}*", ""]
         lines.append("*Action items:*")
         for ai in result.action_items:
-            due_str = f" (due {ai.due_date.strftime('%b %d')})" if ai.due_date else ""
+            due_str = f" (due {fmt_dt(ai.due_date, _family_tz, FMT_DATE_SHORT)})" if ai.due_date else ""
             lines.append(f"• {ai.description}{due_str}")
         if result.email_summary:
             lines.append(f"\n_{result.email_summary}_")

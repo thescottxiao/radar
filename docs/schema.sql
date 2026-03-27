@@ -123,7 +123,8 @@ CREATE TYPE activity_type AS ENUM (
 CREATE TABLE recurring_schedules (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
-    child_id        UUID REFERENCES children(id) ON DELETE SET NULL,  -- NULL for adult events
+    child_id        UUID REFERENCES children(id) ON DELETE SET NULL,  -- NULL for adult/caregiver events
+    caregiver_id    UUID REFERENCES caregivers(id) ON DELETE SET NULL,  -- NULL for child events
     activity_name   TEXT NOT NULL,  -- e.g. "soccer", "piano lessons", "swim class"
     activity_type   activity_type NOT NULL DEFAULT 'other',
     pattern         TEXT NOT NULL,  -- human-readable, e.g. "every Wednesday, 3:30-4:30pm"
@@ -166,6 +167,9 @@ CREATE TABLE events (
     description     TEXT,
     datetime_start  TIMESTAMPTZ NOT NULL,
     datetime_end    TIMESTAMPTZ,
+    all_day         BOOLEAN NOT NULL DEFAULT FALSE,
+    time_tbd        BOOLEAN NOT NULL DEFAULT FALSE,
+    time_explicit   BOOLEAN NOT NULL DEFAULT FALSE,
     location        TEXT,
 
     -- Recurrence
@@ -189,7 +193,9 @@ CREATE TABLE events (
     confirmed_by_caregiver BOOLEAN NOT NULL DEFAULT FALSE,
     cancelled_at    TIMESTAMPTZ,  -- soft-delete: set when event is cancelled
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT chk_not_allday_and_tbd CHECK (NOT (all_day AND time_tbd))
 );
 
 CREATE INDEX idx_events_family ON events(family_id);
@@ -197,6 +203,8 @@ CREATE INDEX idx_events_datetime ON events(family_id, datetime_start);
 CREATE INDEX idx_events_recurring ON events(recurring_schedule_id);
 CREATE INDEX idx_events_type ON events(family_id, type);
 CREATE INDEX idx_events_active ON events(family_id, datetime_start) WHERE cancelled_at IS NULL;
+CREATE INDEX idx_events_unconfirmed ON events(family_id, datetime_start)
+  WHERE confirmed_by_caregiver = FALSE AND cancelled_at IS NULL;
 
 -- Junction table: events <-> children
 CREATE TABLE event_children (
@@ -207,6 +215,16 @@ CREATE TABLE event_children (
 );
 
 CREATE INDEX idx_event_children_family ON event_children(family_id);
+
+-- Junction table: events <-> caregivers (attendees, not transport)
+CREATE TABLE event_caregivers (
+    event_id        UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    caregiver_id    UUID NOT NULL REFERENCES caregivers(id) ON DELETE CASCADE,
+    family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    PRIMARY KEY (event_id, caregiver_id)
+);
+
+CREATE INDEX idx_event_caregivers_family ON event_caregivers(family_id);
 
 -- Preparation tasks linked to events
 CREATE TYPE task_status AS ENUM ('pending', 'complete');

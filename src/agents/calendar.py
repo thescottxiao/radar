@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.utils.timezone import fmt_dt, FMT_DATETIME_LONG, FMT_TIME
 from src.agents.schemas import (
     Conflict,
     ExtractedAssignment,
@@ -52,17 +53,35 @@ You are extracting event details from a parent's natural language message.
 Interpret dates relative to today ({today}). The family timezone is {timezone}.
 
 Family children: {children_names}
+Family caregivers: {caregiver_names}
 
 Extract the event details as precisely as possible. If the child is not
 specified but only one child matches the activity, infer it.
+
+For each event, identify WHO the event is for:
+- If the event mentions specific children, put those names in child_names.
+- If the event is for a caregiver/parent (e.g., "work dinner", "my dentist appointment"),
+  put the caregiver name(s) in caregiver_names.
+- If the sender says "I have a..." or "my ...", use the sender's name as the caregiver attendee.
+  The sender's name is: {sender_name}
+- If a child event also has a parent attending, include both.
+- If no specific person is mentioned, leave both lists empty.
 """
 
 UPDATE_EXTRACTION_SYSTEM = """\
 You are extracting event update details from a parent's message.
 Today is {today}. The family timezone is {timezone}.
 
+Family children: {children_names}
+Family caregivers: {caregiver_names}
+
 Recent events that might be the target:
 {recent_events}
+
+If the user is changing WHO attends an event (e.g., "Actually Jake can't go",
+"Add Mom to the field trip"), extract the updated attendee lists:
+- new_child_names: the full updated list of children (null if not changing)
+- new_caregiver_names: the full updated list of caregiver attendees (null if not changing)
 """
 
 CORRECTION_EXTRACTION_SYSTEM = """\
@@ -153,16 +172,19 @@ async def handle_query(
     ctx = await _build_family_context(session, family_id)
 
     # Fetch upcoming events (wider window for query)
-    upcoming = await events_dal.get_upcoming_events(session, family_id, days=14)
+    upcoming = await events_dal.get_upcoming_events(session, family_id, days=14, confirmed_only=False)
 
+    family_tz = ctx["timezone"]
     event_details = []
     for ev in upcoming:
-        start_str = ev.datetime_start.strftime("%A, %B %d at %I:%M %p")
+        start_str = fmt_dt(ev.datetime_start, family_tz, FMT_DATETIME_LONG)
         detail = f"- {ev.title}: {start_str}"
         if ev.location:
             detail += f" at {ev.location}"
         if ev.datetime_end:
-            detail += f" (ends {ev.datetime_end.strftime('%I:%M %p')})"
+            detail += f" (ends {fmt_dt(ev.datetime_end, family_tz, FMT_TIME)})"
+        if not ev.confirmed_by_caregiver:
+            detail += " (pending confirmation)"
         event_details.append(detail)
 
     events_text = "\n".join(event_details) if event_details else "(no upcoming events)"
@@ -199,11 +221,20 @@ async def handle_schedule(
     """
     ctx = await _build_family_context(session, family_id)
 
+    # Resolve sender name for attendee inference
+    sender_name = "unknown"
+    for cg in ctx["caregivers"]:
+        if cg.id == sender_id:
+            sender_name = cg.name or cg.whatsapp_phone or "unknown"
+            break
+
     # Step 1: Extract event details from natural language
     system = EVENT_EXTRACTION_SYSTEM.format(
         today=ctx["today"],
         timezone=ctx["timezone"],
         children_names=", ".join(ctx["children_names"]) if ctx["children_names"] else "none",
+        caregiver_names=", ".join(ctx["caregiver_names"]) if ctx.get("caregiver_names") else "none",
+        sender_name=sender_name,
     )
 
     extracted = await extract(
@@ -216,16 +247,18 @@ async def handle_schedule(
     resolved = await _resolve_extracted_event(session, family_id, extracted, ctx)
 
     # Step 3: Check for conflicts
-    conflicts = await detect_conflicts(session, family_id, resolved)
+    conflicts = await detect_conflicts(session, family_id, resolved, family_tz=ctx["timezone"])
 
-    # Step 4: Check for duplicates
+    # Step 4: Check for duplicates (pass child_ids to avoid merging different kids' events)
     duplicate = await events_dal.find_duplicate_event(
-        session, family_id, resolved.title, resolved.datetime_start
+        session, family_id, resolved.title, resolved.datetime_start,
+        child_ids=resolved.child_ids or None,
     )
     if duplicate:
+        family_tz = ctx["timezone"]
         return (
             f"It looks like \"{resolved.title}\" is already on the calendar for "
-            f"{duplicate.datetime_start.strftime('%A, %B %d at %I:%M %p')}. "
+            f"{fmt_dt(duplicate.datetime_start, family_tz, FMT_DATETIME_LONG)}. "
             f"Did you mean to update it?"
         )
 
@@ -250,31 +283,42 @@ async def handle_schedule(
             session, family_id, event.id, resolved.child_ids
         )
 
-    # Step 6: Create GCal event (best-effort — gcal module may not be ready)
-    try:
-        from src.actions.gcal import create_gcal_event
+    # Link caregiver attendees
+    if resolved.caregiver_ids:
+        await events_dal.link_caregivers_to_event(
+            session, family_id, event.id, resolved.caregiver_ids
+        )
 
-        caregivers = ctx["caregivers"]
-        for caregiver in caregivers:
-            if caregiver.google_refresh_token_encrypted:
-                await create_gcal_event(session, caregiver.id, event)
-                break  # Create on first connected calendar
-    except (ImportError, Exception) as exc:
-        logger.warning("Could not create GCal event: %s", exc)
+    # Step 6: Create GCal event via outbox
+    try:
+        await outbox_dal.enqueue_gcal_write(
+            session, family_id, event.id,
+            GcalOutboxOperation.create, {},
+            idempotency_key=f"create:{event.id}",
+        )
+    except Exception as exc:
+        logger.warning("Could not enqueue GCal create: %s", exc)
 
     # Step 7: Build response
-    start_str = resolved.datetime_start.strftime("%A, %B %d at %I:%M %p")
+    family_tz = ctx["timezone"]
+    start_str = fmt_dt(resolved.datetime_start, family_tz, FMT_DATETIME_LONG)
     response = f"Got it! I've added \"{resolved.title}\" on {start_str}"
     if resolved.location:
         response += f" at {resolved.location}"
     response += "."
 
+    attendee_names = []
     if resolved.child_ids and ctx["children"]:
-        child_names = [
+        attendee_names.extend(
             c.name for c in ctx["children"] if c.id in resolved.child_ids
-        ]
-        if child_names:
-            response += f" (for {', '.join(child_names)})"
+        )
+    if resolved.caregiver_ids and ctx["caregivers"]:
+        attendee_names.extend(
+            c.name or c.whatsapp_phone
+            for c in ctx["caregivers"] if c.id in resolved.caregiver_ids
+        )
+    if attendee_names:
+        response += f" (for {', '.join(attendee_names)})"
 
     if conflicts:
         response += "\n\n⚠️ Heads up — I noticed some potential conflicts:"
@@ -364,10 +408,11 @@ async def handle_update(
         logger.warning("Could not enqueue GCal update: %s", exc)
 
     # Build response
+    family_tz = ctx["timezone"]
     changes = []
     if "datetime_start" in update_kwargs:
         changes.append(
-            f"time → {update_kwargs['datetime_start'].strftime('%A, %B %d at %I:%M %p')}"
+            f"time → {fmt_dt(update_kwargs['datetime_start'], family_tz, FMT_DATETIME_LONG)}"
         )
     if "location" in update_kwargs:
         changes.append(f"location → {update_kwargs['location']}")
@@ -446,10 +491,11 @@ async def handle_correction(
         session, family_id, target.id, **update_kwargs
     )
 
+    family_tz = ctx["timezone"]
     changes = []
     if "datetime_start" in update_kwargs:
         changes.append(
-            f"date/time → {update_kwargs['datetime_start'].strftime('%A, %B %d at %I:%M %p')}"
+            f"date/time → {fmt_dt(update_kwargs['datetime_start'], family_tz, FMT_DATETIME_LONG)}"
         )
     if "location" in update_kwargs:
         changes.append(f"location → {update_kwargs['location']}")
@@ -477,6 +523,7 @@ async def _apply_single_assignment(
     child_name: str,
     sender_id: UUID,
     caregivers: list,
+    family_tz: str = "America/New_York",
 ) -> tuple[str, str]:
     """Apply transport assignment to a single event.
 
@@ -496,7 +543,7 @@ async def _apply_single_assignment(
             setattr(target_event, k, v)
 
     role_text = _role_label(role)
-    time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
+    time_str = fmt_dt(target_event.datetime_start, family_tz, FMT_DATETIME_LONG)
 
     confirm = (
         f"• {role_text} for {child_name} at "
@@ -542,14 +589,42 @@ async def _apply_single_assignment(
     return confirm, notify
 
 
+def _pick_recently_mentioned_event(
+    candidates: list[Event], recent_messages: list[str]
+) -> Event | None:
+    """Return a candidate if exactly one was recently mentioned in bot messages."""
+    import re
+    from src.state.events import compute_title_similarity
+
+    mentioned_titles = re.findall(r'\*([^*]+)\*', "\n".join(recent_messages))
+    if not mentioned_titles:
+        return None
+
+    matched: set[UUID] = set()
+    for title in mentioned_titles:
+        for ev in candidates:
+            if compute_title_similarity(title, ev.title) >= 0.5:
+                matched.add(ev.id)
+
+    # Only return if exactly one candidate matched — unambiguous
+    if len(matched) == 1:
+        return next(ev for ev in candidates if ev.id in matched)
+    return None
+
+
 async def _resolve_target_event(
     session: AsyncSession,
     family_id: UUID,
     assignment: ExtractedAssignment,
     events_needing_transport: list[Event],
     all_upcoming: list[Event],
+    recent_messages: list[str] | None = None,
 ) -> Event | None:
-    """Find the target event for a single extracted assignment."""
+    """Find the target event for a single extracted assignment.
+
+    Returns None when multiple candidates exist and none can be identified —
+    callers should ask the user for clarification.
+    """
     child = await children_dal.fuzzy_match_child(
         session, family_id, assignment.child_name
     )
@@ -581,8 +656,15 @@ async def _resolve_target_event(
             session, family_id, assignment.event_hint, candidates,
         )
 
+    # Tier 1: match from recent conversation context
     if not target_event and candidates:
-        target_event = candidates[0]
+        target_event = _pick_recently_mentioned_event(candidates, recent_messages or [])
+
+    # Tier 2: auto-assign only if exactly one candidate, else return None for clarification
+    if not target_event:
+        if len(candidates) == 1:
+            target_event = candidates[0]
+        # else: multiple candidates, no match — return None so caller can ask
 
     return target_event
 
@@ -689,6 +771,7 @@ async def handle_assignment_claim(
             target = await _resolve_target_event(
                 session, family_id, assignment,
                 events_needing_transport, ctx["upcoming"],
+                recent_messages=memory_lines,
             )
             if target:
                 child_name = _get_child_name_for_event(target, child_id_to_name, fallback_child)
@@ -699,23 +782,36 @@ async def handle_assignment_claim(
         if extracted.assignments:
             assignment = extracted.assignments[0]
         else:
-            # Fallback: extract didn't populate assignments — use first event
-            if events_needing_transport:
-                ev = events_needing_transport[0]
-                child_name = _get_child_name_for_event(ev, child_id_to_name, fallback_child)
-                target_events.append((ev, child_name))
             assignment = None
 
         if assignment and not target_events:
             target = await _resolve_target_event(
                 session, family_id, assignment,
                 events_needing_transport, ctx["upcoming"],
+                recent_messages=memory_lines,
             )
             if target:
                 child_name = _get_child_name_for_event(target, child_id_to_name, fallback_child)
                 target_events.append((target, child_name))
+        elif not assignment and events_needing_transport:
+            # No assignment extracted — try recent context or ask
+            target = _pick_recently_mentioned_event(events_needing_transport, memory_lines)
+            if target:
+                child_name = _get_child_name_for_event(target, child_id_to_name, fallback_child)
+                target_events.append((target, child_name))
+            elif len(events_needing_transport) == 1:
+                ev = events_needing_transport[0]
+                child_name = _get_child_name_for_event(ev, child_id_to_name, fallback_child)
+                target_events.append((ev, child_name))
 
     if not target_events:
+        # Ask for clarification if multiple events need transport
+        if len(events_needing_transport) > 1:
+            from src.utils.timezone import fmt_event_time
+            lines = ["Which event do you want to handle transport for?"]
+            for i, ev in enumerate(events_needing_transport, 1):
+                lines.append(f"{i}. {ev.title} ({fmt_event_time(ev, family_tz)})")
+            return ("\n".join(lines), [])
         return ("I couldn't find an upcoming event that needs transport assignment.", [])
 
     # ── Apply assignments ──
@@ -723,10 +819,12 @@ async def handle_assignment_claim(
     notify_lines: list[str] = []
     assigned_event_ids: set[UUID] = set()
 
+    family_tz = ctx["timezone"]
     for ev, child_name in target_events:
         confirm, notify = await _apply_single_assignment(
             session, family_id, ev, role, assignee_id,
             child_name, sender_id, ctx["caregivers"],
+            family_tz=family_tz,
         )
         confirm_lines.append(confirm)
         notify_lines.append(notify)
@@ -736,7 +834,8 @@ async def handle_assignment_claim(
     all_conflicts: list = []
     for ev, _child_name in target_events:
         conflicts = await check_all_transport_conflicts(
-            session, family_id, ev, caregiver_filter=assignee_id
+            session, family_id, ev, caregiver_filter=assignee_id,
+            family_tz=family_tz,
         )
         all_conflicts.extend(conflicts)
 
@@ -780,6 +879,7 @@ async def detect_conflicts(
     session: AsyncSession,
     family_id: UUID,
     new_event: ResolvedEvent,
+    family_tz: str = "America/New_York",
 ) -> list[Conflict]:
     """Check for time overlaps and cross-child location conflicts.
 
@@ -816,24 +916,31 @@ async def detect_conflicts(
                 if overlapping_children:
                     conflict_type = "child_double_book"
 
+            # Check if the same caregivers are attending both events
+            if new_event.caregiver_ids and existing.caregivers:
+                existing_cg_ids = {ec.caregiver_id for ec in existing.caregivers}
+                overlapping_caregivers = set(new_event.caregiver_ids) & existing_cg_ids
+                if overlapping_caregivers:
+                    conflict_type = "caregiver_double_book"
+
             # Check location impossibility (different locations at same time)
             if (
                 new_event.location
                 and existing.location
                 and new_event.location.lower() != existing.location.lower()
-                and conflict_type == "child_double_book"
+                and conflict_type in ("child_double_book", "caregiver_double_book")
             ):
                 conflict_type = "location_impossible"
 
             description = (
                 f"\"{existing.title}\" is at "
-                f"{existing.datetime_start.strftime('%I:%M %p')}"
+                f"{fmt_dt(existing.datetime_start, family_tz, FMT_TIME)}"
             )
             if existing.location:
                 description += f" at {existing.location}"
             description += (
                 f", which overlaps with \"{new_event.title}\" at "
-                f"{event_start.strftime('%I:%M %p')}"
+                f"{fmt_dt(event_start, family_tz, FMT_TIME)}"
             )
 
             child_names = []
@@ -922,6 +1029,7 @@ async def detect_sibling_transport_conflicts(
     event: Event,
     role: str,
     caregiver_id: UUID,
+    family_tz: str = "America/New_York",
 ) -> list[Conflict]:
     """Check if the assigned caregiver has an overlapping transport duty
     for a *different* child at a *different* location for the *same role*.
@@ -940,7 +1048,7 @@ async def detect_sibling_transport_conflicts(
         session, family_id, window_start, window_end
     )
 
-    return _check_sibling_conflicts_against(event, role, caregiver_id, nearby_events)
+    return _check_sibling_conflicts_against(event, role, caregiver_id, nearby_events, family_tz=family_tz)
 
 
 async def check_all_transport_conflicts(
@@ -948,6 +1056,7 @@ async def check_all_transport_conflicts(
     family_id: UUID,
     event: Event,
     caregiver_filter: UUID | None = None,
+    family_tz: str = "America/New_York",
 ) -> list[Conflict]:
     """Check both transport roles on an event for sibling conflicts.
 
@@ -970,7 +1079,7 @@ async def check_all_transport_conflicts(
         if caregiver_filter and cg_id != caregiver_filter:
             continue
         conflicts = _check_sibling_conflicts_against(
-            event, role_key, cg_id, nearby_events
+            event, role_key, cg_id, nearby_events, family_tz=family_tz
         )
         all_conflicts.extend(conflicts)
 
@@ -982,6 +1091,7 @@ def _check_sibling_conflicts_against(
     role: str,
     caregiver_id: UUID,
     nearby_events: list[Event],
+    family_tz: str = "America/New_York",
 ) -> list[Conflict]:
     """Check for sibling transport conflicts against pre-fetched nearby events."""
     conflicts: list[Conflict] = []
@@ -1011,8 +1121,8 @@ def _check_sibling_conflicts_against(
         role_label = _role_label(role)
         description = (
             f"Same caregiver is assigned to {role_label} at "
-            f"\"{event.title}\" ({event.datetime_start.strftime('%I:%M %p')}, {event.location}) "
-            f"and \"{other.title}\" ({other.datetime_start.strftime('%I:%M %p')}, "
+            f"\"{event.title}\" ({fmt_dt(event.datetime_start, family_tz, FMT_TIME)}, {event.location}) "
+            f"and \"{other.title}\" ({fmt_dt(other.datetime_start, family_tz, FMT_TIME)}, "
             f"{other.location}). One of these needs a different driver."
         )
 
@@ -1077,8 +1187,10 @@ async def populate_transport_defaults(
                 result["action"] = "auto_populated"
 
     # Run sibling conflict check for any assigned roles
+    family = await families_dal.get_family(session, family_id)
+    family_tz = family.timezone if family else "America/New_York"
     result["conflicts"] = await check_all_transport_conflicts(
-        session, family_id, event
+        session, family_id, event, family_tz=family_tz,
     )
 
     return result
@@ -1123,6 +1235,7 @@ async def _apply_single_release(
     target_event: Event,
     role: str,
     sender_id: UUID,
+    family_tz: str = "America/New_York",
 ) -> tuple[str, str] | None:
     """Release transport for a single event.
 
@@ -1146,7 +1259,7 @@ async def _apply_single_release(
     )
 
     role_text = " and ".join(released_roles)
-    time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
+    time_str = fmt_dt(target_event.datetime_start, family_tz, FMT_DATETIME_LONG)
 
     confirm = f"• {role_text} for \"{target_event.title}\" on {time_str}"
     notify = f"• {role_text.capitalize()} for \"{target_event.title}\" on {time_str}"
@@ -1249,12 +1362,14 @@ async def handle_transport_release(
         return ("I couldn't find a matching transport assignment to release.", [])
 
     # ── Apply releases ──
+    family_tz = ctx["timezone"]
     confirm_lines: list[str] = []
     notify_lines: list[str] = []
 
     for ev in target_events:
         result = await _apply_single_release(
             session, family_id, ev, role, sender_id,
+            family_tz=family_tz,
         )
         if result:
             confirm, notify = result
@@ -1420,6 +1535,25 @@ async def apply_confirmed_transport_routines(
 # ── Private helpers ─────────────────────────────────────────────────────
 
 
+def _fuzzy_match_caregiver(name: str, caregivers: list) -> object | None:
+    """Match a caregiver name (case-insensitive, prefix match)."""
+    name_lower = name.lower().strip()
+    if not name_lower:
+        return None
+    # Exact match first
+    for cg in caregivers:
+        if cg.name and cg.name.lower() == name_lower:
+            return cg
+    # Prefix match
+    for cg in caregivers:
+        if cg.name and (
+            cg.name.lower().startswith(name_lower)
+            or name_lower.startswith(cg.name.lower())
+        ):
+            return cg
+    return None
+
+
 async def _resolve_extracted_event(
     session: AsyncSession,
     family_id: UUID,
@@ -1483,6 +1617,13 @@ async def _resolve_extracted_event(
         if child:
             child_ids.append(child.id)
 
+    # Resolve caregiver IDs from names
+    caregiver_ids = []
+    for name in getattr(extracted, "caregiver_names", []):
+        cg = _fuzzy_match_caregiver(name, ctx["caregivers"])
+        if cg:
+            caregiver_ids.append(cg.id)
+
     return ResolvedEvent(
         title=extracted.title,
         event_type=extracted.event_type,
@@ -1490,6 +1631,7 @@ async def _resolve_extracted_event(
         datetime_end=dt_end,
         location=extracted.location,
         child_ids=child_ids,
+        caregiver_ids=caregiver_ids,
         description=extracted.description,
         is_recurring=extracted.is_recurring,
         recurrence_pattern=extracted.recurrence_pattern,

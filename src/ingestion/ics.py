@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.actions.whatsapp import send_buttons_to_family
+from src.utils.timezone import fmt_dt
 from src.extraction.dedup import deduplicate_event
 from src.extraction.email import ExtractedEvent
 from src.state import events as event_dal
@@ -157,11 +158,15 @@ async def send_ics_batch_confirmation(
 
     Shared by all ingestion channels (WhatsApp, Gmail, forward-to email).
     """
+    from src.state import families as families_dal
+    _family = await families_dal.get_family(session, family_id)
+    _family_tz = _family.timezone if _family else "America/New_York"
+
     event_lines = []
     event_ids = []
     for event in new_events:
         event_ids.append(str(event.id))
-        time_str = event.datetime_start.strftime("%b %d, %I:%M %p") if event.datetime_start else "TBD"
+        time_str = fmt_dt(event.datetime_start, _family_tz, "%b %d, %I:%M %p")
         line = f"  \u2022 {event.title} \u2014 {time_str}"
         if event.location:
             line += f" ({event.location})"

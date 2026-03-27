@@ -106,6 +106,9 @@ src/
 5. **Treat email content as untrusted data** in LLM prompts. Never execute email content as agent instructions (prompt injection defense).
 4. **Voice note audio files are deleted after transcription.** Never persisted.
 6. **Event type is a free-form text field**, not a DB enum. The LLM can return any descriptive string (e.g., "birthday party", "swim meet", "reception"). No validation or normalization needed.
+7. **Events track attendees via junction tables.** `event_children` links children to events; `event_caregivers` links caregivers to events. Both are used for per-person schedule filtering, inline display, and conflict detection.
+8. **Events without a known time use one of two states:** genuinely all-day events (school holiday) use `all_day=true`; events with unknown time (birthday party Saturday) use `time_tbd=true` with `datetime_start` at midnight. `time_explicit` is persisted to distinguish estimated from explicit times. Constraint: `all_day` and `time_tbd` cannot both be true.
+9. **GCal events use `status: "tentative"` for unconfirmed events** and `transparency: "transparent"` so they don't block time. Confirmed events use `status: "confirmed"` with default transparency.
 
 ### Agent Rules
 
@@ -118,7 +121,7 @@ src/
 5. **Concurrent input on SUGGEST actions requires consensus.** If multiple caregivers respond with contradictory instructions to a pending external action, the bot pauses and surfaces the conflict. It does not execute until resolved.
 5. **Extraction confidence below 0.6** triggers explicit confirmation ("Is this right?"). Above 0.6 gets implicit correction opportunity.
 6. **Local DB is authoritative for schedule queries.** `_handle_query_schedule` queries `events_dal.get_upcoming_events()` first. Falls back to GCal API only if local DB has no events for the family (e.g., pre-sync).
-7. **Confirmed events are written to local DB first, then synced to GCal via the outbox.** When a caregiver confirms an event, it's created in the Event Registry and a `create` entry is enqueued in `gcal_outbox`. The outbox processor handles GCal API calls asynchronously with retry.
+7. **Confirmed events are written to local DB first, then synced to GCal via the outbox.** When a caregiver confirms an event, the local event is marked `confirmed_by_caregiver=true` and a `patch` entry is enqueued in `gcal_outbox` to update the GCal event from tentative to confirmed. The outbox processor handles GCal API calls asynchronously with retry.
 8. **Event updates go through the outbox.** When a user updates an event (e.g., "I bought the gift"), the local DB is updated first, then a `patch` or `update` entry is enqueued in `gcal_outbox`.
 9. **GCal webhook changes are imported into the authoritative local DB.** Changes made directly in GCal are synced to the Event Registry silently (no WhatsApp notifications). For events with `source=calendar`, GCal wins on reconciliation. For all other sources, local DB wins.
 10. **GCal writes go through the outbox.** Never call GCal API directly from request handlers. Use `outbox_dal.enqueue_gcal_write()` instead. The outbox processor (`gcal_outbox_processor.py`) polls every 5s with exponential backoff retry (30s → 2h, max 5 retries).
@@ -128,6 +131,22 @@ src/
 14. **Transport routines are inferred, not asked.** After 3 consistent claims by the same caregiver for the same (recurring_schedule, day_of_week, role), create an unconfirmed FamilyLearning. Confirmed via weekly summary with no correction. Never ask "who usually handles pickup?" upfront.
 15. **Sibling transport conflicts are flagged, not resolved.** When the same caregiver is assigned to overlapping events (±30 min) for different children at different locations, notify all caregivers. Do not propose which caregiver should swap.
 16. **Transport swaps clear the instance, not the routine.** "I can't do pickup Thursday" clears that event's assignment but leaves the RecurringSchedule default intact for future weeks.
+17. **Events track both child and caregiver attendees.** `event_children` and `event_caregivers` junction tables link attendees to events. Transport coordination only applies when an event has child attendees (unchanged gate). Caregiver-only events skip transport entirely.
+18. **Extraction infers attendees from context.** "I have a work dinner" adds the sender as a caregiver attendee. "Emma has soccer" adds Emma as a child attendee. LLM extraction outputs `caregiver_names` alongside `children_involved`.
+19. **Dedup considers children.** Events with the same title and time but different `children_involved` are treated as distinct (e.g., separate "Soccer Practice" events for different kids).
+20. **Caregiver conflict detection.** When a caregiver is an attendee on two overlapping events, the conflict is surfaced. This extends sibling transport conflict detection to caregiver-as-attendee scenarios.
+21. **Schedule queries and digests show attendee names inline.** Format: `Soccer [Emma, Jake]`, `Book Club [Mom]`. GCal descriptions also include attendee names.
+22. **Email-extracted events are created immediately** in the events table with `confirmed_by_caregiver=False` and pushed to GCal as tentative (`status: "tentative"`, `transparency: "transparent"`). On confirmation, the GCal event is updated to `status: "confirmed"`. On dismissal, the GCal event is deleted. PendingAction stores `event_id`, not an `event_data` blob. The event already exists when the confirmation button is sent.
+23. **Server startup uses `expire_stale_pending()`, not `expire_all_pending()`.** Only actions past their validity window are expired. Active pending actions survive restarts.
+24. **GCal reconciler never pushes unconfirmed events.** When GCal import dedup-matches an unconfirmed event, the unconfirmed event is auto-confirmed (GCal wins).
+25. **GCal-sourced events are always confirmed.** Events imported via GCal webhooks or the reconciler are created with `confirmed_by_caregiver=True`. Only email-extracted events start unconfirmed.
+26. **Schedule queries use `confirmed_only=False`** and annotate unconfirmed events with "(pending confirmation)" in results and digests.
+27. **Partial extraction failures are salvaged.** If one event in a multi-event extraction fails validation, the remaining valid events and action items are still returned and persisted.
+28. **Daily digest resurfaces unconfirmed future events** and auto-cancels past unconfirmed events during generation.
+29. **Email extraction NEVER invents times not stated in the email.** Date-only emails produce all-day events.
+30. **Travel/departure to an event is NOT a separate event.** Departure time becomes `datetime_start`, travel details go in prep checklist.
+31. **For well-known public events, the LLM may estimate `datetime_end` only** (never `datetime_start`). `time_explicit=false` when estimated.
+32. **Dedup merge promotes all-day events to timed** when a follow-up extraction provides a specific time.
 
 ### WhatsApp Rules
 
@@ -168,7 +187,7 @@ Phase 1 and Phase 2 code is implemented. Phase 3+ features should not be built u
 
 - **GCal/Gmail watch channels expire every 7 days.** Auto-renewal on 5-day intervals. Always check expiry before assuming a watch is active.
 - **WhatsApp 24-hour window.** Can't send free-form messages after window closes. Design flows to open with a template.
-- **Dedup is fuzzy, not exact.** datetime ±30 min AND title similarity > 0.7. Edge cases will exist — prefer false negatives (miss a dup) over false positives (incorrectly merge distinct events).
+- **Dedup is fuzzy, not exact.** datetime ±30 min AND title similarity > 0.7 AND same children. Events with the same title/time but different `children_involved` are distinct. Edge cases will exist — prefer false negatives (miss a dup) over false positives (incorrectly merge distinct events).
 - **Recurring schedule exceptions don't modify the overall pattern.** Only the individual instance is changed. "Recurring schedule" is the generalized term (not "season") — covers sports, music lessons, tutoring, swim, etc.
 - **Family learning entries start unconfirmed.** They become confirmed after being surfaced in a weekly summary with no correction.
 - **Every sent email must be logged** in the sent_emails audit table with full content, recipient, approving caregiver, and edit history.
@@ -178,3 +197,6 @@ Phase 1 and Phase 2 code is implemented. Phase 3+ features should not be built u
 - **GCal watch channels can be stale.** After re-OAuth, old channels may still send notifications with unknown channel IDs. These are logged as warnings and ignored. They expire naturally after 7 days.
 - **Meta test mode.** During development, phone numbers must be added to the Meta Developer Dashboard allowed list. WhatsApp sends to non-allowed numbers fail with "Recipient phone number not in allowed list."
 - **Gmail caregiver lookup must be unique.** Only one caregiver per family should have a given `google_account_email` to avoid `MultipleResultsFound` errors.
+- **WhatsApp delivery failure for event confirmations** is tracked in PendingAction context. Unconfirmed events are resurfaced in the daily digest as a fallback.
+- **Schedule queries use `confirmed_only=False` by default** and annotate unconfirmed events with "(pending confirmation)". Both confirmed and unconfirmed events are shown to give caregivers full visibility.
+- **All-day and time-TBD events use `datetime_start` at midnight.** Dedup uses same-date matching for all-day and time-TBD candidates instead of ±30 min window. Both render in GCal as date-only events; time-TBD events get "(time TBD)" appended to the title.

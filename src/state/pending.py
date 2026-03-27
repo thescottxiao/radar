@@ -19,6 +19,36 @@ async def expire_all_pending(session: AsyncSession) -> int:
     return result.rowcount
 
 
+async def expire_stale_pending(session: AsyncSession) -> int:
+    """Expire only pending actions that have exceeded their validity window.
+
+    Actions are considered stale if:
+    - expires_at is set and in the past, OR
+    - expires_at is NULL and created_at is older than 24 hours (legacy fallback)
+
+    Unlike expire_all_pending(), this preserves actions still within their window,
+    so legitimate pending confirmations survive server restarts.
+    """
+    now = datetime.now(UTC)
+    fallback_cutoff = now - timedelta(hours=24)
+    result = await session.execute(
+        update(PendingAction)
+        .where(
+            PendingAction.status == PendingActionStatus.awaiting_approval,
+            or_(
+                PendingAction.expires_at <= now,
+                and_(
+                    PendingAction.expires_at.is_(None),
+                    PendingAction.created_at <= fallback_cutoff,
+                ),
+            ),
+        )
+        .values(status=PendingActionStatus.expired, resolved_at=now)
+    )
+    await session.flush()
+    return result.rowcount
+
+
 async def create_pending_action(
     session: AsyncSession,
     family_id: UUID,

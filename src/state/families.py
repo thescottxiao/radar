@@ -55,9 +55,11 @@ async def create_caregiver(
     whatsapp_phone: str,
     name: str | None = None,
 ) -> Caregiver:
+    from src.utils.phone import normalize_phone
+
     caregiver = Caregiver(
         family_id=family_id,
-        whatsapp_phone=whatsapp_phone,
+        whatsapp_phone=normalize_phone(whatsapp_phone),
         name=name,
     )
     session.add(caregiver)
@@ -68,10 +70,12 @@ async def create_caregiver(
 async def get_caregiver_by_phone(
     session: AsyncSession, family_id: UUID, phone: str
 ) -> Caregiver | None:
+    from src.utils.phone import normalize_phone
+
     result = await session.execute(
         select(Caregiver).where(
             Caregiver.family_id == family_id,
-            Caregiver.whatsapp_phone == phone,
+            Caregiver.whatsapp_phone == normalize_phone(phone),
         )
     )
     return result.scalar_one_or_none()
@@ -81,9 +85,11 @@ async def find_caregiver_by_phone(
     session: AsyncSession, phone: str
 ) -> Caregiver | None:
     """Find a caregiver by phone across all families (for DM lookup)."""
+    from src.utils.phone import normalize_phone
+
     result = await session.execute(
         select(Caregiver).where(
-            Caregiver.whatsapp_phone == phone,
+            Caregiver.whatsapp_phone == normalize_phone(phone),
             Caregiver.is_active.is_(True),
         )
     )

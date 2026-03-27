@@ -10,8 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.extraction.schemas import IntentResult, IntentType
 from src.state.models import GcalOutboxOperation
 from src.llm import HAIKU_MODEL, SONNET_MODEL, classify, extract, generate
+from src.utils.timezone import fmt_dt, fmt_event_time, FMT_DATE_SHORT
 from src.state import children as children_dal
 from src.state import events as events_dal
+from src.state import families as families_dal
 from src.state import learning as learning_dal
 from src.state import memory as memory_dal
 from src.state import pending as pending_dal
@@ -27,14 +29,14 @@ Classify the user's message into exactly one intent category.
 
 Intent categories:
 - add_event: User wants to add or mentions a new event (e.g. "Soccer Saturday at 10am", "I have a birthday party tomorrow evening", "Don't forget Jake has a recital next week")
-- query_schedule: Asking about upcoming events or schedule (e.g. "What's on this weekend?")
+- query_schedule: Asking about upcoming events or schedule (e.g. "What's on this weekend?", "What's Emma's schedule this week?"). For extracted_params, include "person" if the user asks about a specific person's schedule (e.g. {"person": "Emma", "days": 7})
 - modify_event: Wants to change an existing calendar event (e.g. "Move soccer to 3pm")
 - cancel_event: Wants to cancel an event (e.g. "Cancel the dentist appointment")
 - assign_transport: Assigning drop-off or pick-up (e.g. "I'll take Emma to soccer", "I'll drop her off")
 - release_transport: Releasing/swapping a transport assignment (e.g. "I can't do pickup Thursday", "someone else needs to handle drop-off Tuesday", "I can't take Jake")
 - rsvp_response: Responding to an RSVP prompt (e.g. "Yes to the birthday party")
 - share_info: Sharing family information — child names/ages, schools, activities, friend names, or other family facts (e.g. "My son is John, he's 8", "Emma goes to Lincoln Elementary", "Jake does swimming on Tuesdays")
-- approval_response: Responding to a pending action awaiting approval — includes approving, dismissing, providing details, correcting info, or updating prep tasks. extracted_params must include "action": "approve", "dismiss", or "edit_instruction"
+- approval_response: DIRECTLY approving, dismissing, or editing a pending action (e.g. "yes", "no", "approve", "skip", "change the time to 3pm", "the location should be Main Street"). Must be a direct response to the pending action, NOT about related logistics. extracted_params must include "action": "approve", "dismiss", or "edit_instruction"
 - event_update: Updating an event already on the calendar — marking tasks done, adding notes (e.g. "I bought the wedding gift")
 - set_preference: Caregiver is stating a preference or rule for how Radar should behave (e.g. "Don't message me before 7am", "Keep messages short", "I handle school stuff", "No activities on Sundays", "Budget for gifts is $30")
 - correct_learning: Correcting a fact or preference Radar learned (e.g. "Actually Emma goes to Washington Elementary", "Her birthday is March 28 not 27", "Change the gift budget to $40")
@@ -43,13 +45,14 @@ Intent categories:
 - unknown: Cannot determine intent
 
 Rules:
-1. If there is a pending action and the message relates to it (approval, details, corrections, prep task updates), classify as approval_response.
+1. ONLY classify as approval_response if the message is a DIRECT response to the pending action — explicit yes/no/approve/dismiss, or a direct correction to the pending action's content (e.g., "change the time to 3pm", "the location is wrong"). Messages about transport assignments ("I'll handle pickup"), logistics, scheduling, event updates, or other topics must be classified with their own intent (assign_transport, event_update, etc.) even if a pending action exists. When in doubt, do NOT classify as approval_response.
 2. If no pending action is relevant, use recent conversation context to inform classification.
 3. event_update is only for events already on the calendar, not pending ones.
 4. If the context states "There are no pending actions awaiting approval", NEVER classify as approval_response.
 5. set_preference is for general behavior preferences, NOT for event-specific changes. "Move soccer to 3pm" is modify_event, not set_preference.
 6. correct_learning requires the word "actually" or a clear correction pattern ("not X, it's Y"). Simple new information is share_info, not correct_learning.
 7. When a message mentions an event with a day/time (e.g., "We've got soccer practice Monday morning"), default to add_event. Only classify as modify_event if the message explicitly says to CHANGE, MOVE, RESCHEDULE, or UPDATE an existing event. A similar event title on the calendar does not make it modify_event — recurring activities often have multiple instances.
+8. assign_transport and release_transport are ALWAYS their own intents, never approval_response. "I'll handle pickup", "I've got dropoff", "I can't do pickup Thursday" are transport intents even if a pending action exists.
 
 Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0, "extracted_params": {...}}
 """
@@ -214,8 +217,19 @@ async def classify_intent(
         parsed = _parse_classification_response(raw)
 
         # If the LLM classified as approval_response, attach the pending action ID
+        # Safety: require minimum confidence to prevent misclassification
         if parsed.intent == IntentType.approval_response and pending_actions:
-            parsed.pending_action_id = pending_actions[0].id
+            if parsed.confidence >= 0.7:
+                parsed.pending_action_id = pending_actions[0].id
+            else:
+                # Low confidence approval — likely a misclassification. Fall through
+                # to let the message be handled by its actual intent.
+                logger.info(
+                    "Low confidence approval_response (%.2f) — reclassifying: %s",
+                    parsed.confidence, message[:100],
+                )
+                parsed.intent = IntentType.unknown
+                parsed.confidence = parsed.confidence * 0.5
         elif parsed.intent == IntentType.approval_response and not pending_actions:
             # No active pending actions — LLM was confused by conversation history.
             logger.warning(
@@ -438,10 +452,12 @@ async def _gather_event_context(
     # Tier 2: Calendar events from local DB (authoritative)
     days = default_days
     calendar_context = ""
+    family = await families_dal.get_family(session, family_id)
+    family_tz = family.timezone if family else "America/New_York"
     try:
         local_events = await events_dal.get_upcoming_events(session, family_id, days=days)
         if local_events:
-            calendar_context = _format_local_events(local_events)
+            calendar_context = _format_local_events(local_events, family_tz)
     except Exception:
         logger.warning("Could not fetch local events for context (family %s)", family_id)
 
@@ -472,12 +488,14 @@ def _format_gcal_events(events: list[dict]) -> str:
     return "\n".join(summaries)
 
 
-def _format_local_events(events: list) -> str:
+def _format_local_events(events: list, family_timezone: str = "America/New_York") -> str:
     """Format local DB events into a string for LLM context."""
     summaries = []
     for ev in events:
-        dt_str = ev.datetime_start.strftime("%a %b %d, %I:%M %p") if ev.datetime_start else "TBD"
+        dt_str = fmt_event_time(ev, family_timezone)
         summary = f"- {ev.title} ({dt_str})"
+        if not ev.confirmed_by_caregiver:
+            summary += " ⏳ (pending confirmation)"
         if ev.description:
             summary += f"\n  Description: {ev.description[:500]}"
         if ev.location:
@@ -634,8 +652,9 @@ async def _link_children_and_setup_transport(
     child_names: list[str],
     event_title: str | None = None,
     event_type: str | None = None,
+    caregiver_names: list[str] | None = None,
 ) -> tuple[dict | None, list[str]]:
-    """Link children to event and populate transport defaults.
+    """Link children and caregiver attendees to event, then populate transport defaults.
 
     If child_names is empty, attempts to infer the child from activity data.
     Returns (transport_result, message_lines).
@@ -692,6 +711,17 @@ async def _link_children_and_setup_transport(
                 except Exception:
                     logger.debug("Could not record child-activity learning", exc_info=True)
 
+        # Link caregiver attendees
+        if caregiver_names:
+            from src.agents.calendar import _fuzzy_match_caregiver
+            caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+            for cg_name in caregiver_names:
+                cg = _fuzzy_match_caregiver(cg_name, caregivers)
+                if cg:
+                    await events_dal.link_caregivers_to_event(
+                        session, family_id, event.id, [cg.id]
+                    )
+
         # Populate transport defaults
         from src.agents.calendar import populate_transport_defaults
 
@@ -717,12 +747,11 @@ async def _link_children_and_setup_transport(
     except Exception:
         logger.debug("Child linkage / transport setup failed", exc_info=True)
 
-    # Always ensure children relationship is loaded to prevent lazy-load errors
-    # in callers that access event.children after this function returns
+    # Always ensure relationships are loaded to prevent lazy-load errors
     try:
-        await session.refresh(event, ["children"])
+        await session.refresh(event, ["children", "caregivers"])
     except Exception:
-        pass  # event.children will be None — callers already handle this
+        pass  # callers already handle None
 
     return transport_result, message_lines
 
@@ -805,13 +834,15 @@ async def _handle_add_event(
 
     # Check if key details are missing — ask before creating pending action
     missing = []
-    if not extracted.time_explicit:
+    if getattr(extracted, 'time_tbd', False):
         missing.append("what time")
     if not extracted.location:
         missing.append("where")
 
     if missing:
-        dt_str = extracted.datetime_start.strftime("%A, %B %d") if extracted.datetime_start else "soon"
+        family = await families_dal.get_family(session, family_id)
+        family_tz = family.timezone if family else "America/New_York"
+        dt_str = fmt_dt(extracted.datetime_start, family_tz, fmt="%A, %B %d") if extracted.datetime_start else "soon"
         missing_q = " and ".join(missing)
         ask_text = (
             f"Got it — *{extracted.title}* on {dt_str}. "
@@ -866,13 +897,13 @@ async def _handle_add_event(
                 freq=extracted.recurrence_freq,
                 byday=extracted.recurrence_days,
                 until=extracted.recurrence_until.date() if extracted.recurrence_until else None,
-                interval=extracted.recurrence_interval,
+                interval=extracted.recurrence_interval or 1,
             )
         elif extracted.recurrence_freq:
             rrule_string = build_rrule(
                 freq=extracted.recurrence_freq,
                 until=extracted.recurrence_until.date() if extracted.recurrence_until else None,
-                interval=extracted.recurrence_interval,
+                interval=extracted.recurrence_interval or 1,
             )
 
         if rrule_string:
@@ -921,10 +952,13 @@ async def _handle_add_event(
     transport_result, transport_lines = await _link_children_and_setup_transport(
         session, family_id, event, extracted.child_names,
         event_title=extracted.title, event_type=extracted.event_type,
+        caregiver_names=getattr(extracted, "caregiver_names", None),
     )
 
     # Generate description with prep checklist for manual events (if no description yet)
-    dt_str = extracted.datetime_start.strftime("%a %b %d, %I:%M %p")
+    family = await families_dal.get_family(session, family_id)
+    family_tz = family.timezone if family else "America/New_York"
+    dt_str = fmt_event_time(extracted, family_tz)
     if not event.description:
         child_names_linked = [c.name for c in (event.children or [])]
         desc = await _generate_event_description(
@@ -1077,25 +1111,69 @@ async def _handle_query_schedule(
     except (ValueError, TypeError):
         days = 7
 
+    # Check if filtering by person
+    person_filter = intent.extracted_params.get("person")
+    person_child_id = None
+    person_caregiver_id = None
+    if person_filter:
+        from src.agents.calendar import _fuzzy_match_caregiver
+        # Try matching child first, then caregiver
+        child_match = await children_dal.fuzzy_match_child(session, family_id, person_filter)
+        if child_match:
+            person_child_id = child_match.id
+        else:
+            cgs = await families_dal.get_caregivers_for_family(session, family_id)
+            cg_match = _fuzzy_match_caregiver(person_filter, cgs)
+            if cg_match:
+                person_caregiver_id = cg_match.id
+
     # Query local DB first (authoritative), using family timezone for boundaries
     event_lines = []
     source = "local"
     events = await events_dal.get_upcoming_events(
-        session, family_id, days=days, family_timezone=family_tz
+        session, family_id, days=days, family_timezone=family_tz,
+        confirmed_only=False,
     )
-    from zoneinfo import ZoneInfo
-    tz = ZoneInfo(family_tz)
 
-    # Build caregiver map for transport status display
+    # Filter by person if requested
+    if person_child_id:
+        events = [
+            ev for ev in events
+            if any(ec.child_id == person_child_id for ec in ev.children)
+        ]
+    elif person_caregiver_id:
+        events = [
+            ev for ev in events
+            if any(ec.caregiver_id == person_caregiver_id for ec in ev.caregivers)
+        ]
+
+    # Build maps for display
     caregivers = await families_dal.get_caregivers_for_family(session, family_id)
     caregiver_map = {c.id: c.name or c.whatsapp_phone for c in caregivers}
+    children = await children_dal.get_children_for_family(session, family_id)
+    child_map = {c.id: c.name for c in children}
 
     for ev in events:
-        local_start = ev.datetime_start.astimezone(tz) if ev.datetime_start else None
-        dt_str = local_start.strftime("%a %b %d, %I:%M %p") if local_start else "TBD"
+        dt_str = fmt_event_time(ev, family_tz)
         line = f"- {ev.title} — {dt_str}"
         if ev.location:
             line += f" @ {ev.location}"
+        # Include attendee names (skip if filtered by person — redundant)
+        if not person_filter:
+            attendee_names = []
+            for ec in ev.children:
+                name = child_map.get(ec.child_id)
+                if name:
+                    attendee_names.append(name)
+            for ec in ev.caregivers:
+                name = caregiver_map.get(ec.caregiver_id)
+                if name:
+                    attendee_names.append(name)
+            if attendee_names:
+                line += f" [{', '.join(attendee_names)}]"
+        # Flag unconfirmed events
+        if not ev.confirmed_by_caregiver:
+            line += " ⏳ (pending confirmation)"
         # Include transport status
         if ev.drop_off_by or ev.pick_up_by:
             transport_parts = []
@@ -1116,14 +1194,13 @@ async def _handle_query_schedule(
             for ev in gcal_events:
                 start = ev.get("start", "")
                 try:
-                    from datetime import datetime as dt
+                    from datetime import datetime as _dt_cls
 
+                    dt_obj = _dt_cls.fromisoformat(start)
                     if "T" in start:
-                        dt_obj = dt.fromisoformat(start)
-                        dt_str = dt_obj.strftime("%a %b %d, %I:%M %p")
+                        dt_str = fmt_dt(dt_obj, family_tz)
                     else:
-                        dt_obj = dt.fromisoformat(start)
-                        dt_str = dt_obj.strftime("%a %b %d")
+                        dt_str = fmt_dt(dt_obj, family_tz, fmt=FMT_DATE_SHORT)
                 except (ValueError, TypeError):
                     dt_str = start
 
@@ -1213,6 +1290,16 @@ async def _apply_single_modify(
             if update_kwargs:
                 await events_dal.update_event(session, family_id, local_ev.id, **update_kwargs)
                 logger.info("Updated local event '%s'", local_ev.title)
+
+            # Update attendees if changed
+            if "child_ids" in modifications:
+                await events_dal.replace_children_on_event(
+                    session, family_id, local_ev.id, modifications["child_ids"]
+                )
+            if "caregiver_ids" in modifications:
+                await events_dal.replace_caregivers_on_event(
+                    session, family_id, local_ev.id, modifications["caregiver_ids"]
+                )
         except Exception:
             logger.debug("Could not update local event for '%s'", matched_event)
 
@@ -1332,7 +1419,14 @@ against the calendar events. Date match takes priority over conversation context
      - "end": new end datetime in ISO 8601 format (if inferrable)
      - "location": new location
      - "description": new or updated description
+     - "new_child_names": updated list of children attending (if attendees changed)
+     - "new_caregiver_names": updated list of caregiver attendees (if attendees changed)
    - "confirmation_message": a friendly confirmation message describing the change
+
+For attendee changes (e.g., "Jake can't go to soccer", "Add Mom to the field trip"):
+- Set new_child_names to the FULL updated list of children (not just added/removed)
+- Set new_caregiver_names to the FULL updated list of caregiver attendees
+- Only include these keys if attendees are actually changing
 
 Only output the JSON. No other text."""
 
@@ -1364,6 +1458,24 @@ Upcoming calendar events:
 
         gcal_id = data.get("gcal_id")
         modifications = data.get("modifications", {})
+
+        # Resolve attendee names to IDs if present
+        if "new_child_names" in modifications:
+            child_ids = []
+            for name in modifications.pop("new_child_names", []):
+                child = await children_dal.fuzzy_match_child(session, family_id, name)
+                if child:
+                    child_ids.append(child.id)
+            modifications["child_ids"] = child_ids
+        if "new_caregiver_names" in modifications:
+            from src.agents.calendar import _fuzzy_match_caregiver
+            caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+            caregiver_ids = []
+            for name in modifications.pop("new_caregiver_names", []):
+                cg = _fuzzy_match_caregiver(name, caregivers)
+                if cg:
+                    caregiver_ids.append(cg.id)
+            modifications["caregiver_ids"] = caregiver_ids
 
         if not modifications:
             return (
@@ -1597,9 +1709,14 @@ async def _cancel_single_event(
         except Exception:
             logger.debug("Could not cancel pending outbox items for event %s", local_ev.id)
 
+    # Resolve gcal_id: prefer LLM-provided, fall back to event's source_refs
+    if not gcal_id and local_ev:
+        gcal_refs = [r for r in (local_ev.source_refs or []) if r.startswith("gcal:")]
+        if gcal_refs:
+            gcal_id = gcal_refs[0].removeprefix("gcal:")
+
     if gcal_id:
         try:
-
             await outbox_dal.enqueue_gcal_write(
                 session, family_id, local_ev.id if local_ev else None,
                 GcalOutboxOperation.delete, {},
@@ -1934,6 +2051,7 @@ async def _handle_approval_response(
                 sa_select(Event).where(
                     Event.family_id == family_id,
                     Event.id.in_(event_ids),
+                    Event.cancelled_at.is_(None),
                 )
             )
             matched_events = list(result.scalars().all())
@@ -2064,31 +2182,64 @@ async def _handle_approval_response(
         return response
 
     if action_type == "approve":
-        # Check if this is an event confirmation — need to create the event
+        # Check if this is an event confirmation
         pending_action = await pending_dal.get_pending_action(
             session, family_id, pending_action_id
         )
-        if pending_action and pending_action.type.value == "event_confirmation":
-            # If still collecting details, treat as edit — merge the user's
-            # details into event_data before creating (don't lose them)
+
+        if not pending_action:
+            # PendingAction not found — may have been deleted. Can't proceed.
+            return "I couldn't find that action. It may have expired."
+
+        if pending_action.type.value == "event_confirmation":
+            # Already resolved by another caregiver?
+            if pending_action.status != PendingActionStatus.awaiting_approval:
+                resolver = pending_action.resolved_by
+                if resolver and resolver != sender_id:
+                    return "Another caregiver already responded to this event."
+                if pending_action.status == PendingActionStatus.approved:
+                    return "This event has already been confirmed."
+
+            # If still collecting details, treat as edit
             if pending_action.context.get("missing_fields"):
                 return await _handle_event_confirmation_edit(
                     session, family_id, pending_action, message,
                 )
-            response = await _create_event_from_pending(session, family_id, pending_action)
+            # New flow: event already exists in DB with confirmed_by_caregiver=False
+            if pending_action.context.get("event_id"):
+                response = await _confirm_pending_event(session, family_id, pending_action)
+            else:
+                # Backward compat: old PendingActions with event_data in JSONB
+                response = await _create_event_from_pending(session, family_id, pending_action)
         else:
             response = "Approved! I'll take care of it."
 
-        await pending_dal.resolve_pending(
-            session,
-            family_id=family_id,
-            action_id=pending_action_id,
-            status=PendingActionStatus.approved,
-            resolved_by=sender_id,
-        )
+        # Resolve the pending action (skip if already resolved)
+        if pending_action.status == PendingActionStatus.awaiting_approval:
+            await pending_dal.resolve_pending(
+                session,
+                family_id=family_id,
+                action_id=pending_action_id,
+                status=PendingActionStatus.approved,
+                resolved_by=sender_id,
+            )
         return response
 
     elif action_type == "dismiss":
+        # Fetch pending action BEFORE resolving so we can access context
+        pending_action = await pending_dal.get_pending_action(
+            session, family_id, pending_action_id
+        )
+
+        if not pending_action:
+            return "I couldn't find that action. It may have expired."
+
+        # Already resolved by another caregiver?
+        if pending_action.status != PendingActionStatus.awaiting_approval:
+            if pending_action.resolved_by and pending_action.resolved_by != sender_id:
+                return "Another caregiver already responded to this event."
+            return "This has already been handled."
+
         await pending_dal.resolve_pending(
             session,
             family_id=family_id,
@@ -2096,11 +2247,26 @@ async def _handle_approval_response(
             status=PendingActionStatus.dismissed,
             resolved_by=sender_id,
         )
-        # Check if this was an event confirmation for a friendlier message
-        pending_action = await pending_dal.get_pending_action(
-            session, family_id, pending_action_id
-        )
-        if pending_action and pending_action.type.value == "event_confirmation":
+
+        if pending_action.type.value == "event_confirmation":
+            # Soft-cancel the unconfirmed event if it exists in the DB
+            event_id_str = (pending_action.context or {}).get("event_id")
+            if event_id_str:
+                try:
+                    event = await events_dal.get_event(session, family_id, UUID(event_id_str))
+                    if event and not event.confirmed_by_caregiver:
+                        event.cancelled_at = datetime.now(UTC)
+                        await session.flush()
+                        # Delete from GCal if it was pushed as tentative
+                        existing_gcal_refs = [r for r in (event.source_refs or []) if r.startswith("gcal:")]
+                        if existing_gcal_refs:
+                            from src.state import outbox as outbox_dal
+                            await outbox_dal.enqueue_gcal_write(
+                                session, family_id, event.id, GcalOutboxOperation.delete, {},
+                                idempotency_key=f"delete:{event.id}",
+                            )
+                except Exception:
+                    logger.debug("Could not soft-cancel event on dismiss", exc_info=True)
             return "Got it, skipped."
         return "No problem, I've dismissed that."
 
@@ -2146,6 +2312,138 @@ async def _handle_approval_response(
             return "Sorry, I couldn't revise the draft. Please try again."
 
     return "I'm not sure what you'd like to do with that action. You can approve, dismiss, or suggest edits."
+
+
+async def _confirm_pending_event(
+    session: AsyncSession, family_id: UUID, pending_action
+) -> str:
+    """Confirm an existing unconfirmed event (new flow).
+
+    The event already exists in the events table with confirmed_by_caregiver=False.
+    This function flips the flag, sets up transport, generates description, and
+    enqueues the GCal write.
+    """
+    event_id_str = pending_action.context.get("event_id")
+    if not event_id_str:
+        return "Approved, but I couldn't find the event details. Something went wrong."
+
+    event = await events_dal.get_event(session, family_id, UUID(event_id_str))
+    if not event:
+        return "Approved, but the event was not found. It may have been deleted."
+
+    if event.cancelled_at:
+        # Revive — user explicitly approved despite prior cancellation
+        # (e.g., reconciler soft-deleted it, or duplicate was auto-dismissed)
+        event.cancelled_at = None
+
+    if event.confirmed_by_caregiver:
+        return f"*{event.title}* is already on your calendar."
+
+    # Confirm the event
+    event.confirmed_by_caregiver = True
+    await session.flush()
+
+    # Dismiss duplicate pending confirmations for events with the same title/time
+    # This prevents the duplicate's pending action from confusing the intent classifier
+    try:
+        active_pending = await pending_dal.get_active_pending(session, family_id)
+        for pa in active_pending:
+            if pa.id == pending_action.id:
+                continue
+            if pa.type != PendingActionType.event_confirmation:
+                continue
+            dup_event_id = (pa.context or {}).get("event_id")
+            if dup_event_id:
+                dup_event = await events_dal.get_event(session, family_id, UUID(dup_event_id))
+                if dup_event and not dup_event.confirmed_by_caregiver:
+                    # Check if it's a duplicate of the just-confirmed event
+                    from src.state.events import compute_title_similarity
+                    similarity = compute_title_similarity(event.title, dup_event.title)
+                    time_diff = abs((event.datetime_start - dup_event.datetime_start).total_seconds())
+                    # Also check children match (different kids = different events)
+                    event_child_ids = {c.child_id for c in (event.children or [])}
+                    dup_child_ids = {c.child_id for c in (dup_event.children or [])}
+                    children_match = (event_child_ids == dup_child_ids) or not event_child_ids or not dup_child_ids
+                    if similarity >= 0.7 and time_diff <= 1800 and children_match:  # 30 min
+                        dup_event.cancelled_at = datetime.now(UTC)
+                        await pending_dal.resolve_pending(
+                            session, family_id, pa.id,
+                            status=PendingActionStatus.dismissed,
+                            resolved_by=pending_action.resolved_by or pending_action.initiated_by,
+                        )
+                        logger.info(
+                            "Auto-dismissed duplicate pending event %s (matched confirmed %s)",
+                            dup_event.id, event.id,
+                        )
+    except Exception:
+        logger.debug("Error cleaning up duplicate pending confirmations", exc_info=True)
+
+    # Set up transport for linked children
+    child_names = [c.child_id for c in (event.children or [])]
+    transport_lines: list[str] = []
+    if event.children:
+        _, transport_lines = await _link_children_and_setup_transport(
+            session, family_id, event, [],
+            event_title=event.title, event_type=event.type,
+        )
+
+    # Generate description with prep checklist if not already present
+    family = await families_dal.get_family(session, family_id)
+    family_tz = family.timezone if family else "America/New_York"
+    dt_str = fmt_event_time(event, family_tz)
+    if not event.description:
+        child_name_list = []
+        if event.children:
+            children = await children_dal.get_children_for_family(session, family_id)
+            child_id_map = {c.id: c.name for c in children}
+            child_name_list = [child_id_map.get(ec.child_id, "") for ec in event.children]
+        desc = await _generate_event_description(
+            title=event.title,
+            event_type=event.type or "other",
+            location=event.location,
+            dt_str=dt_str,
+            child_names=child_name_list,
+            has_children_linked=bool(child_name_list),
+        )
+        if desc:
+            event.description = desc
+            await session.flush()
+
+    # Enqueue GCal write via outbox
+    try:
+        from src.actions.gcal import event_to_gcal_body
+        from src.state import outbox as outbox_dal
+
+        # If event was already pushed as tentative, update it to confirmed
+        existing_gcal_refs = [r for r in (event.source_refs or []) if r.startswith("gcal:")]
+        if existing_gcal_refs:
+            await outbox_dal.enqueue_gcal_write(
+                session, family_id, event.id, GcalOutboxOperation.update, {},
+                idempotency_key=f"update:{event.id}:{int(datetime.now(UTC).timestamp() * 1000)}",
+            )
+        else:
+            payload = event_to_gcal_body(event)
+            await outbox_dal.enqueue_gcal_write(
+                session, family_id, event.id, GcalOutboxOperation.create, payload,
+                idempotency_key=f"create:{event.id}",
+            )
+    except Exception:
+        logger.exception("Failed to enqueue GCal write for '%s'", event.title)
+
+    # Build response
+    parts = [f"✅ Added to your calendar: *{event.title}*", f"{dt_str}"]
+    if event.location:
+        parts.append(f"📍 {event.location}")
+
+    if event.description:
+        prep_lines = [line.strip() for line in event.description.split("\n") if line.strip().startswith("☐")]
+        if prep_lines:
+            parts.append("")
+            parts.append("*Prep:*")
+            parts.extend(prep_lines)
+
+    parts.extend(transport_lines)
+    return "\n".join(parts)
 
 
 async def _create_event_from_pending(
@@ -2199,7 +2497,9 @@ async def _create_event_from_pending(
     )
 
     # Generate description with prep checklist if not already present
-    dt_str = datetime_start.strftime("%a %b %d, %I:%M %p")
+    family = await families_dal.get_family(session, family_id)
+    family_tz = family.timezone if family else "America/New_York"
+    dt_str = fmt_event_time(event, family_tz)
     if not event.description:
         child_names = child_names_from_data or event_data.get("child_names", [])
         desc = await _generate_event_description(
@@ -2253,14 +2553,34 @@ async def _handle_event_confirmation_edit(
 ) -> str:
     """Handle edit instructions for pending event confirmations.
 
-    Updates the event_data in context based on the user's correction
+    Updates the event details based on the user's correction
     (e.g., "it's at John's house at 7pm") and regenerates the confirmation.
+    Supports both new flow (event_id → Event row) and old flow (event_data JSONB).
     """
     from src.actions.whatsapp import send_buttons_to_family
     from src.llm import generate
     from src.utils.button_ids import encode_button_id
 
-    event_data = pending_action.context.get("event_data", {})
+    # New flow: load event_data from Event row in DB
+    event_id_str = pending_action.context.get("event_id")
+    db_event = None
+    if event_id_str:
+        db_event = await events_dal.get_event(session, family_id, UUID(event_id_str))
+        if db_event:
+            event_data = {
+                "title": db_event.title,
+                "event_type": db_event.type,
+                "datetime_start": db_event.datetime_start.isoformat() if db_event.datetime_start else None,
+                "datetime_end": db_event.datetime_end.isoformat() if db_event.datetime_end else None,
+                "location": db_event.location,
+                "description": db_event.description,
+            }
+        else:
+            event_data = {}
+    else:
+        # Backward compat: old flow with event_data in JSONB
+        event_data = pending_action.context.get("event_data", {})
+
     _local_today = (await _get_local_now(session, family_id)).strftime("%A, %B %d, %Y")
 
     # Use LLM to apply the user's edit to the event data
@@ -2295,7 +2615,7 @@ Today's date: {_local_today}"""
 
         updates = json.loads(text)
 
-        # Apply updates to event_data
+        # Apply updates to event_data dict (used for confirmation message)
         for key, value in updates.items():
             if key in (
                 "title", "event_type", "datetime_start", "datetime_end",
@@ -2303,14 +2623,36 @@ Today's date: {_local_today}"""
             ):
                 event_data[key] = value
 
+        # New flow: also apply updates to the Event row in DB
+        if db_event:
+            from datetime import datetime as _dt
+            field_map = {
+                "title": "title",
+                "event_type": "type",
+                "location": "location",
+                "description": "description",
+            }
+            for json_key, db_field in field_map.items():
+                if json_key in updates:
+                    setattr(db_event, db_field, updates[json_key])
+            if "datetime_start" in updates:
+                val = updates["datetime_start"]
+                db_event.datetime_start = _dt.fromisoformat(val) if isinstance(val, str) else val
+            if "datetime_end" in updates:
+                val = updates["datetime_end"]
+                db_event.datetime_end = _dt.fromisoformat(val) if isinstance(val, str) else val
+            await session.flush()
+
         # Rebuild confirmation message
         from datetime import datetime as dt
 
+        family = await families_dal.get_family(session, family_id)
+        family_tz = family.timezone if family else "America/New_York"
         datetime_start = event_data.get("datetime_start")
         if datetime_start and isinstance(datetime_start, str):
             try:
                 dt_obj = dt.fromisoformat(datetime_start)
-                dt_str = dt_obj.strftime("%a %b %d, %I:%M %p")
+                dt_str = fmt_dt(dt_obj, family_tz)
             except ValueError:
                 dt_str = datetime_start
         else:
@@ -2342,7 +2684,9 @@ Today's date: {_local_today}"""
         # Use deep copy to avoid in-place mutation that SQLAlchemy can't detect
         import copy
         updated_context = copy.deepcopy(pending_action.context)
-        updated_context["event_data"] = event_data
+        # Only store event_data in JSONB for old flow (backward compat)
+        if not db_event:
+            updated_context["event_data"] = event_data
         edit_history = (pending_action.edit_history or []) + [{
             "instruction": instruction,
             "timestamp": datetime.now(UTC).isoformat(),
@@ -2395,7 +2739,10 @@ Today's date: {_local_today}"""
 
             if updated_context.get("source") == "manual":
                 # Manual event: auto-add directly, no confirmation needed
-                response = await _create_event_from_pending(session, family_id, pending_action)
+                if db_event:
+                    response = await _confirm_pending_event(session, family_id, pending_action)
+                else:
+                    response = await _create_event_from_pending(session, family_id, pending_action)
                 await pending_dal.resolve_pending(
                     session, family_id, pending_action.id,
                     status=PendingActionStatus.approved,

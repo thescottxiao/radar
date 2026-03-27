@@ -141,6 +141,13 @@ async def reconcile_family(
                 new_ref = f"gcal:{gcal_id}"
                 if new_ref not in existing_refs:
                     dup.source_refs = existing_refs + [new_ref]
+                # Auto-confirm unconfirmed local event since GCal is authoritative
+                if not dup.confirmed_by_caregiver:
+                    dup.confirmed_by_caregiver = True
+                    logger.info(
+                        "Auto-confirmed local event %s (matched GCal %s)",
+                        dup.id, gcal_id,
+                    )
                 stats["skipped"] += 1
                 continue
 
@@ -153,6 +160,9 @@ async def reconcile_family(
                 except (ValueError, TypeError):
                     pass
 
+            # Detect all-day events: date-only strings have no "T" separator
+            is_all_day = bool(start_str) and "T" not in start_str
+
             await events_dal.create_event(
                 session, family_id,
                 source=EventSource.calendar,
@@ -162,6 +172,10 @@ async def reconcile_family(
                 datetime_start=dt_start,
                 datetime_end=dt_end,
                 location=gev.get("location"),
+                all_day=is_all_day,
+                time_explicit=not is_all_day,
+                time_tbd=False,
+                confirmed_by_caregiver=True,
             )
             stats["created"] += 1
             logger.info("Imported GCal event %s ('%s') to local DB", gcal_id, title)
@@ -188,12 +202,18 @@ async def reconcile_family(
                     pass
                 stats["updated"] += 1
             else:
-                # Local DB wins — push to GCal
-                await outbox_dal.enqueue_gcal_write(
-                    session, family_id, local_ev.id, GcalOutboxOperation.update, {},
-                    idempotency_key=f"reconcile:{local_ev.id}:{uuid4().hex[:12]}",
-                )
-                stats["pushed"] += 1
+                # Local DB wins — push to GCal (only confirmed events)
+                if local_ev.confirmed_by_caregiver:
+                    await outbox_dal.enqueue_gcal_write(
+                        session, family_id, local_ev.id, GcalOutboxOperation.update, {},
+                        idempotency_key=f"reconcile:{local_ev.id}:{uuid4().hex[:12]}",
+                    )
+                    stats["pushed"] += 1
+                else:
+                    logger.debug(
+                        "Skipping push for unconfirmed event %s", local_ev.id,
+                    )
+                    stats["skipped"] += 1
 
     await session.flush()
     return stats

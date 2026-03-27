@@ -214,27 +214,18 @@ class TestDedupNoMatchCreatesNew:
         assert call_kwargs["location"] == "Music Hall"
 
     @patch("src.extraction.dedup.event_dal")
-    async def test_creates_event_without_datetime(
+    async def test_raises_for_event_without_datetime(
         self, mock_event_dal, mock_session, family_id
     ):
-        """Events without datetime_start are always created new (can't dedup)."""
+        """Events without datetime_start raise ValueError (NOT NULL constraint)."""
         extracted = ExtractedEvent(
             title="Sometime Event",
             datetime_start=None,
             confidence=0.4,
         )
 
-        new_event = MagicMock(spec=Event)
-        new_event.id = uuid4()
-        mock_event_dal.create_event = AsyncMock(return_value=new_event)
-
-        event, is_new = await deduplicate_event(
-            mock_session, family_id, extracted
-        )
-
-        assert is_new is True
-        # find_duplicate_event should NOT have been called
-        mock_event_dal.find_duplicate_event.assert_not_called()
+        with pytest.raises(ValueError, match="without datetime_start"):
+            await deduplicate_event(mock_session, family_id, extracted)
 
     @patch("src.extraction.dedup.event_dal")
     async def test_new_event_preserves_rsvp_info(

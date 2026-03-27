@@ -31,10 +31,10 @@ async def lifespan(app: FastAPI):
 
         # Clear stale pending actions so they don't confuse intent classification
         from src.db import async_session_factory
-        from src.state.pending import expire_all_pending
+        from src.state.pending import expire_stale_pending
 
         async with async_session_factory() as session:
-            expired = await expire_all_pending(session)
+            expired = await expire_stale_pending(session)
             await session.commit()
             if expired:
                 logger.info("Expired %d stale pending actions on startup", expired)

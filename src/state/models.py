@@ -265,6 +265,7 @@ class RecurringSchedule(Base):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
     child_id: Mapped[UUID | None] = mapped_column(ForeignKey("children.id", ondelete="SET NULL"))
+    caregiver_id: Mapped[UUID | None] = mapped_column(ForeignKey("caregivers.id", ondelete="SET NULL"))
     activity_name: Mapped[str] = mapped_column(Text, nullable=False)
     activity_type: Mapped[ActivityType] = mapped_column(default=ActivityType.other)
     pattern: Mapped[str] = mapped_column(Text, nullable=False)
@@ -323,6 +324,9 @@ class Event(Base):
     description: Mapped[str | None] = mapped_column(Text)
     datetime_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     datetime_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    all_day: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    time_tbd: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    time_explicit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     location: Mapped[str | None] = mapped_column(Text)
 
     # Recurrence
@@ -355,6 +359,7 @@ class Event(Base):
     )
 
     children: Mapped[list["EventChild"]] = relationship(cascade="all, delete-orphan")
+    caregivers: Mapped[list["EventCaregiver"]] = relationship(cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("idx_events_family", "family_id"),
@@ -376,6 +381,20 @@ class EventChild(Base):
     family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
 
     __table_args__ = (Index("idx_event_children_family", "family_id"),)
+
+
+class EventCaregiver(Base):
+    __tablename__ = "event_caregivers"
+
+    event_id: Mapped[UUID] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE"), primary_key=True
+    )
+    caregiver_id: Mapped[UUID] = mapped_column(
+        ForeignKey("caregivers.id", ondelete="CASCADE"), primary_key=True
+    )
+    family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
+
+    __table_args__ = (Index("idx_event_caregivers_family", "family_id"),)
 
 
 class PrepTask(Base):

@@ -12,6 +12,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.utils.timezone import fmt_dt
 from src.state import children as children_dal
 from src.state import events as events_dal
 from src.state import families as families_dal
@@ -58,13 +59,30 @@ async def build_family_context(
 
     caregiver_info = [c.name or c.whatsapp_phone for c in caregivers]
 
+    # Build name maps for attendee display in event context
+    child_name_map = {c.id: c.name for c in kids}
+    caregiver_name_map = {c.id: c.name or c.whatsapp_phone for c in caregivers}
+
     # Build events text
+    family_tz = family.timezone if family else "America/New_York"
     event_lines = []
     for ev in upcoming:
-        start_str = ev.datetime_start.strftime("%a %b %d at %I:%M %p")
+        start_str = fmt_dt(ev.datetime_start, family_tz, "%a %b %d at %I:%M %p")
         line = f"- {ev.title}: {start_str}"
         if ev.location:
             line += f" at {ev.location}"
+        # Include attendee names for richer LLM context
+        attendee_names = []
+        for ec in ev.children:
+            name = child_name_map.get(ec.child_id)
+            if name:
+                attendee_names.append(name)
+        for ec in ev.caregivers:
+            name = caregiver_name_map.get(ec.caregiver_id)
+            if name:
+                attendee_names.append(name)
+        if attendee_names:
+            line += f" [{', '.join(attendee_names)}]"
         event_lines.append(line)
 
     from src.utils.timezone import get_family_now

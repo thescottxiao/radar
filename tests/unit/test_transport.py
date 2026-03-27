@@ -751,6 +751,7 @@ class TestHandleAssignmentClaimBroadcast:
                       "upcoming": [event],
                       "children_names": ["Emma"],
                       "caregivers": [cg1, cg2],
+                      "timezone": "America/New_York",
                   }),
             patch("src.agents.calendar.extract", new_callable=AsyncMock,
                   return_value=mock_extracted),
@@ -813,6 +814,7 @@ class TestHandleAssignmentClaimBroadcast:
                       "upcoming": [event],
                       "children_names": ["Emma"],
                       "caregivers": [cg1, cg2],
+                      "timezone": "America/New_York",
                   }),
             patch("src.agents.calendar.extract", new_callable=AsyncMock,
                   return_value=mock_extracted),
@@ -867,6 +869,7 @@ class TestHandleAssignmentClaimBroadcast:
                       "upcoming": [event1, event2, event3],
                       "children_names": ["Emma"],
                       "caregivers": [cg1, cg2],
+                      "timezone": "America/New_York",
                   }),
             patch("src.agents.calendar.extract", new_callable=AsyncMock,
                   return_value=mock_extracted),
@@ -932,6 +935,7 @@ class TestHandleAssignmentClaimBroadcast:
                       "upcoming": [event1, event2, event3],
                       "children_names": ["Emma"],
                       "caregivers": [cg1, cg2],
+                      "timezone": "America/New_York",
                   }),
             patch("src.agents.calendar.extract", new_callable=AsyncMock,
                   return_value=mock_extracted),
@@ -989,6 +993,7 @@ class TestHandleTransportReleaseBulk:
                       "upcoming": [event1, event2],
                       "children_names": ["Emma"],
                       "caregivers": [cg1, cg2],
+                      "timezone": "America/New_York",
                   }),
             patch("src.agents.calendar.extract", new_callable=AsyncMock,
                   return_value=mock_extracted),
@@ -1070,3 +1075,62 @@ class TestGCalTransportDescription:
         assert body["description"].count("🚗 Transport") == 1
         assert "Drop-off: Mom" in body["description"]
         assert "Old" not in body["description"]
+
+
+# ── Recently-mentioned event resolution tests ─────────────────────────
+
+
+class TestPickRecentlyMentionedEvent:
+    """Tests for _pick_recently_mentioned_event and transport context resolution."""
+
+    @pytest.fixture
+    def family_id(self):
+        return uuid4()
+
+    def test_prefers_recently_mentioned_event(self, family_id):
+        """When bot recently confirmed an event, transport should target that event."""
+        from src.agents.calendar import _pick_recently_mentioned_event
+
+        early_event = _make_event(family_id, title="Jack's Birthday Blue Jays Game", hours_from_now=24)
+        later_event = _make_event(family_id, title="OCF Boulder Provincials", hours_from_now=48)
+
+        recent_messages = [
+            "Radar: ✅ Added to your calendar: *OCF Boulder Provincials*\nMar 26 (time TBD)",
+        ]
+
+        result = _pick_recently_mentioned_event(
+            [early_event, later_event], recent_messages
+        )
+        assert result is not None
+        assert result.id == later_event.id
+
+    def test_returns_none_when_no_recent_messages(self, family_id):
+        """No recent messages → returns None."""
+        from src.agents.calendar import _pick_recently_mentioned_event
+
+        ev = _make_event(family_id, title="Soccer Practice", hours_from_now=24)
+        result = _pick_recently_mentioned_event([ev], [])
+        assert result is None
+
+    def test_returns_none_when_multiple_candidates_match(self, family_id):
+        """When multiple candidates match recent messages, returns None (ambiguous)."""
+        from src.agents.calendar import _pick_recently_mentioned_event
+
+        ev1 = _make_event(family_id, title="Soccer Practice", hours_from_now=24)
+        ev2 = _make_event(family_id, title="Soccer Game", hours_from_now=48)
+
+        recent_messages = [
+            "Radar: *Soccer Practice* on Tuesday and *Soccer Game* on Thursday",
+        ]
+
+        result = _pick_recently_mentioned_event([ev1, ev2], recent_messages)
+        assert result is None
+
+    def test_auto_assigns_single_candidate(self, family_id):
+        """With one candidate and no context, _resolve_target_event picks it."""
+        from src.agents.calendar import _pick_recently_mentioned_event
+
+        ev = _make_event(family_id, title="Soccer Practice", hours_from_now=24)
+        # No recent messages — returns None, caller should use single-candidate fallback
+        result = _pick_recently_mentioned_event([ev], [])
+        assert result is None

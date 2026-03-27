@@ -44,6 +44,8 @@ def gcal_event_to_radar_event(
     """
     gcal_id = gcal_event.get("id", "")
     summary = gcal_event.get("summary", "Untitled Event")
+    # Strip display-only prefixes/suffixes we add to GCal titles
+    summary = summary.removeprefix("[Pending] ").removesuffix(" (time TBD)")
     description = gcal_event.get("description")
     location = gcal_event.get("location")
 
@@ -96,6 +98,8 @@ async def process_calendar_change(
     gcal_id = gcal_event.get("id", "")
     status = gcal_event.get("status", "")
     summary = gcal_event.get("summary", "Untitled Event")
+    # Strip display-only prefixes/suffixes we add to GCal titles
+    summary = summary.removeprefix("[Pending] ").removesuffix(" (time TBD)")
 
     logger.info(
         "Processing calendar change: gcal_id=%s summary=%s status=%s",
@@ -204,8 +208,9 @@ async def _handle_update(
         update_kwargs["location"] = new_location
         changes.append(f"location changed to {new_location}")
 
-    # Check for title change
+    # Check for title change (strip display-only prefixes/suffixes we add)
     new_summary = gcal_event.get("summary", "")
+    new_summary = new_summary.removeprefix("[Pending] ").removesuffix(" (time TBD)")
     if new_summary and new_summary != existing_event.title:
         update_kwargs["title"] = new_summary
         changes.append(f"renamed to \"{new_summary}\"")

@@ -64,6 +64,7 @@ async def create_recurring_schedule(
     start_date: date,
     end_date: date | None = None,
     child_id: UUID | None = None,
+    caregiver_id: UUID | None = None,
     activity_type: str = "other",
     location: str | None = None,
     confirmed: bool = False,
@@ -72,6 +73,7 @@ async def create_recurring_schedule(
     schedule = RecurringSchedule(
         family_id=family_id,
         child_id=child_id,
+        caregiver_id=caregiver_id,
         activity_name=activity_name,
         activity_type=activity_type,
         pattern=pattern,

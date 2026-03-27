@@ -15,15 +15,19 @@ from email.utils import parseaddr
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.actions.gcal import event_to_gcal_body
 from src.actions.state import persist_extraction
+from src.utils.timezone import fmt_dt, fmt_event_time
 from src.actions.whatsapp import send_buttons_to_family
 from src.auth.tokens import decrypt_token
 from src.config import settings
 from src.extraction.email import process_email
 from src.ingestion.ics import is_ics_file
 from src.ingestion.schemas import EmailAttachment, EmailContent
+from src.state import events as events_dal
 from src.state import families as families_dal
-from src.state.models import PendingActionType
+from src.state import outbox as outbox_dal
+from src.state.models import GcalOutboxOperation, PendingActionType
 from src.state.pending import create_pending_action
 from src.utils.button_ids import encode_button_id
 
@@ -98,6 +102,18 @@ async def handle_gmail_notification(
     # Process each new message
     for msg_id in message_ids:
         try:
+            # Skip if we've already processed this message (e.g., forwarding
+            # creates multiple history entries for the same content)
+            existing = await events_dal.get_events_by_source_ref(
+                session, caregiver.family_id, msg_id
+            )
+            if existing:
+                logger.info(
+                    "Skipping Gmail message %s — already processed (%d events)",
+                    msg_id, len(existing),
+                )
+                continue
+
             email_content = await fetch_email_content(access_token, msg_id)
             if email_content is None:
                 continue
@@ -119,38 +135,50 @@ async def handle_gmail_notification(
             )
 
             if result.is_relevant:
-                # Persist action items and learnings (events go through button confirmation)
-                await persist_extraction(
+                # Look up family timezone for user-facing formatting
+                _family = await families_dal.get_family(session, caregiver.family_id)
+                _family_tz = _family.timezone if _family else "America/New_York"
+
+                # Persist events (unconfirmed), action items, and learnings
+                persisted_events = await persist_extraction(
                     session,
                     caregiver.family_id,
                     result,
                     source="email",
                     source_ref=msg_id,
-                    skip_events=True,
+                    confirmed=False,  # Events require button confirmation
                 )
 
-                # Send button confirmation for each extracted event
-                for ev in result.events:
-                    if ev.datetime_start is None:
-                        logger.warning("Skipping event '%s' — no datetime_start", ev.title)
-                        continue
+                # Enqueue GCal writes for unconfirmed events (show as tentative)
+                for event in persisted_events:
+                    payload = event_to_gcal_body(event)
+                    await outbox_dal.enqueue_gcal_write(
+                        session,
+                        caregiver.family_id,
+                        event_id=event.id,
+                        operation=GcalOutboxOperation.create,
+                        payload=payload,
+                        idempotency_key=f"create:{event.id}",
+                    )
 
+                # Send button confirmation for each persisted event
+                for event in persisted_events:
                     pending = await create_pending_action(
                         session,
                         family_id=caregiver.family_id,
                         action_type=PendingActionType.event_confirmation,
-                        draft_content=f"{ev.title} — {ev.datetime_start.strftime('%b %d, %I:%M %p')}",
+                        draft_content=f"{event.title} — {fmt_event_time(event, _family_tz, '%b %d, %I:%M %p')}",
                         context={
-                            "event_data": ev.model_dump(mode="json"),
+                            "event_id": str(event.id),
                             "email_subject": email.subject,
                             "source_ref": msg_id,
                         },
                     )
 
-                    time_str = ev.datetime_start.strftime("%b %d, %I:%M %p")
-                    body = f"New event from email:\n*{ev.title}*\n{time_str}"
-                    if ev.location:
-                        body += f"\n📍 {ev.location}"
+                    time_str = fmt_event_time(event, _family_tz, "%b %d, %I:%M %p")
+                    body = f"New event from email:\n*{event.title}*\n{time_str}"
+                    if event.location:
+                        body += f"\n📍 {event.location}"
                     body += "\n\nAdd to your calendar?"
 
                     buttons = [
@@ -158,10 +186,18 @@ async def handle_gmail_notification(
                         {"id": encode_button_id("event_confirm", str(pending.id), "no"), "title": "No, skip"},
                     ]
 
+                    whatsapp_delivered = False
                     try:
                         await send_buttons_to_family(session, caregiver.family_id, body, buttons)
+                        whatsapp_delivered = True
                     except Exception:
-                        logger.exception("Failed to send button message for event '%s'", ev.title)
+                        logger.exception("Failed to send button message for event '%s'", event.title)
+
+                    # Track delivery status on PendingAction
+                    ctx = pending.context or {}
+                    ctx["whatsapp_delivered"] = whatsapp_delivered
+                    pending.context = ctx
+                    await session.flush()
 
                 logger.info(
                     "Processed Gmail message %s for family %s: %d events, %d items",
