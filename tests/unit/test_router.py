@@ -291,6 +291,8 @@ class TestRouteIntent:
         with patch("src.extraction.router.events_dal.get_upcoming_events", return_value=[]), \
              patch("src.state.families.get_family", new_callable=AsyncMock, return_value=mock_family), \
              patch("src.state.families.get_caregivers_for_family",
+                   new_callable=AsyncMock, return_value=[]), \
+             patch("src.extraction.router.children_dal.get_children_for_family",
                    new_callable=AsyncMock, return_value=[]):
             response = await route_intent(
                 session, family_id, intent, "What's on this week?", sender_id
@@ -399,8 +401,18 @@ class TestRouteIntent:
             pending_action_id=action_id,
         )
 
+        # Provide a non-event pending action that is awaiting approval
+        mock_pending = MagicMock()
+        mock_pending.type = MagicMock()
+        mock_pending.type.value = "general_approval"
+        mock_pending.status = MagicMock()
+        mock_pending.status.__eq__ = lambda self, other: True  # awaiting_approval
+
+        from src.state.models import PendingActionStatus
+        mock_pending.status = PendingActionStatus.awaiting_approval
+
         with patch("src.extraction.router.pending_dal.resolve_pending", new_callable=AsyncMock) as mock_resolve, \
-             patch("src.extraction.router.pending_dal.get_pending_action", new_callable=AsyncMock, return_value=None):
+             patch("src.extraction.router.pending_dal.get_pending_action", new_callable=AsyncMock, return_value=mock_pending):
             response = await route_intent(
                 session, family_id, intent, "yes", sender_id
             )
@@ -422,8 +434,18 @@ class TestRouteIntent:
             pending_action_id=action_id,
         )
 
+        # Provide a non-event pending action that is awaiting approval
+        mock_pending = MagicMock()
+        mock_pending.type = MagicMock()
+        mock_pending.type.value = "general_approval"
+        mock_pending.context = {}
+
+        from src.state.models import PendingActionStatus
+        mock_pending.status = PendingActionStatus.awaiting_approval
+        mock_pending.resolved_by = None
+
         with patch("src.extraction.router.pending_dal.resolve_pending", new_callable=AsyncMock) as mock_resolve, \
-             patch("src.extraction.router.pending_dal.get_pending_action", new_callable=AsyncMock, return_value=None):
+             patch("src.extraction.router.pending_dal.get_pending_action", new_callable=AsyncMock, return_value=mock_pending):
             response = await route_intent(
                 session, family_id, intent, "no", sender_id
             )

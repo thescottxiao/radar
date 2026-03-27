@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +38,7 @@ async def enqueue_gcal_write(
             payload=payload,
             gcal_event_id=gcal_event_id,
             idempotency_key=idempotency_key,
+            next_retry_at=datetime.now(UTC),
         )
         .on_conflict_do_nothing(index_elements=["idempotency_key"])
         .returning(GcalOutboxItem)
@@ -63,7 +64,7 @@ async def claim_pending_items(
         select(GcalOutboxItem)
         .where(
             GcalOutboxItem.status.in_([GcalOutboxStatus.pending, GcalOutboxStatus.failed]),
-            GcalOutboxItem.next_retry_at <= now,
+            or_(GcalOutboxItem.next_retry_at <= now, GcalOutboxItem.next_retry_at.is_(None)),
         )
         .order_by(GcalOutboxItem.created_at)
         .limit(batch_size)

@@ -207,8 +207,9 @@ def _extract_message_from_payload(payload: dict) -> dict | None:
             sender_name = contacts[0].get("profile", {}).get("name")
         metadata = value.get("metadata", {})
         group_id = metadata.get("group_id")
-        if sender_phone and not sender_phone.startswith("+"):
-            sender_phone = f"+{sender_phone}"
+        if sender_phone:
+            from src.utils.phone import normalize_phone
+            sender_phone = normalize_phone(sender_phone)
 
         # Parse message content by type
         button_reply_id = None

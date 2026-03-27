@@ -7,13 +7,17 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.calendar import build_caregiver_name_map
+from src.utils.timezone import fmt_dt, fmt_event_time, FMT_TIME, FMT_DATE_SHORT, FMT_DATETIME_LONG
 from src.llm import generate
+from src.state import children as children_dal
 from src.state import events as event_dal
 from src.state import families as families_dal
 from src.state import learning as learning_dal
+from src.state.models import PendingAction, PendingActionType
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,19 @@ async def generate_daily_digest(
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
 
+    # ── Auto-cancel past unconfirmed events ───────────────────────────
+    all_unconfirmed = await event_dal.get_unconfirmed_events(
+        session, family_id, future_only=False
+    )
+    past_unconfirmed = [e for e in all_unconfirmed if e.datetime_start < now]
+    for event in past_unconfirmed:
+        event.cancelled_at = datetime.now(UTC)
+        logger.info(
+            "Auto-cancelled past unconfirmed event %s (%s) for family %s",
+            event.id, event.title, family_id,
+        )
+    await session.flush()
+
     # Today's events (in family timezone)
     todays_events = await event_dal.get_events_in_range(
         session, family_id, today_start, today_end
@@ -62,27 +79,62 @@ async def generate_daily_digest(
         if e.drop_off_by is None or e.pick_up_by is None
     ]
 
+    # ── Pending confirmations (future unconfirmed events) ─────────────
+    future_unconfirmed = await event_dal.get_unconfirmed_events(
+        session, family_id, future_only=True
+    )
+
+    # Look up PendingActions to determine delivery status
+    result = await session.execute(
+        select(PendingAction).where(
+            PendingAction.family_id == family_id,
+            PendingAction.type == PendingActionType.event_confirmation,
+        )
+    )
+    pending_actions = list(result.scalars().all())
+    event_pending_map: dict[str, PendingAction] = {}
+    for pa in pending_actions:
+        eid = (pa.context or {}).get("event_id")
+        if eid:
+            event_pending_map[str(eid)] = pa
+
     # Skip if nothing actionable
-    if not todays_events and not upcoming_deadlines and not unclaimed_transport:
+    if not todays_events and not upcoming_deadlines and not unclaimed_transport and not future_unconfirmed:
         logger.info("No actionable items for daily digest (family %s)", family_id)
         return None
+
+    # Build name maps for attendee display
+    children = await children_dal.get_children_for_family(session, family_id)
+    child_map = {c.id: c.name for c in children}
+    all_caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+    cg_name_map = {c.id: c.name or c.whatsapp_phone for c in all_caregivers}
 
     # Build context for LLM
     events_text = ""
     if todays_events:
         lines = []
         for e in todays_events:
-            time_str = e.datetime_start.strftime("%I:%M %p") if e.datetime_start else "TBD"
-            end_str = f" - {e.datetime_end.strftime('%I:%M %p')}" if e.datetime_end else ""
+            time_str = fmt_event_time(e, family_tz, FMT_TIME)
+            end_str = f" - {fmt_dt(e.datetime_end, family_tz, FMT_TIME)}" if (e.datetime_end and not getattr(e, 'all_day', False)) else ""
             location_str = f" at {e.location}" if e.location else ""
-            lines.append(f"- {time_str}{end_str}: {e.title}{location_str}")
+            attendee_names = []
+            for ec in e.children:
+                name = child_map.get(ec.child_id)
+                if name:
+                    attendee_names.append(name)
+            for ec in e.caregivers:
+                name = cg_name_map.get(ec.caregiver_id)
+                if name:
+                    attendee_names.append(name)
+            attendee_str = f" [{', '.join(attendee_names)}]" if attendee_names else ""
+            lines.append(f"- {time_str}{end_str}: {e.title}{location_str}{attendee_str}")
         events_text = "Today's events:\n" + "\n".join(lines)
 
     deadlines_text = ""
     if upcoming_deadlines:
         lines = []
         for ai in upcoming_deadlines:
-            due_str = ai.due_date.strftime("%a %I:%M %p") if ai.due_date else "soon"
+            due_str = fmt_dt(ai.due_date, family_tz, "%a %I:%M %p") if ai.due_date else "soon"
             lines.append(f"- {ai.description} (due {due_str})")
         deadlines_text = "Approaching deadlines:\n" + "\n".join(lines)
 
@@ -94,7 +146,7 @@ async def generate_daily_digest(
 
         lines = []
         for e in unclaimed_transport:
-            time_str = e.datetime_start.strftime("%I:%M %p") if e.datetime_start else "TBD"
+            time_str = fmt_event_time(e, family_tz, FMT_TIME)
             drop_off_str = cg_map.get(e.drop_off_by, "unassigned") if e.drop_off_by else "unassigned"
             pick_up_str = cg_map.get(e.pick_up_by, "unassigned") if e.pick_up_by else "unassigned"
             lines.append(
@@ -102,7 +154,24 @@ async def generate_daily_digest(
             )
         transport_text = "Transport status:\n" + "\n".join(lines)
 
-    sections = [s for s in [events_text, deadlines_text, transport_text] if s]
+    pending_text = ""
+    if future_unconfirmed:
+        lines = []
+        for e in future_unconfirmed:
+            date_str = fmt_event_time(e, family_tz)
+            pa = event_pending_map.get(str(e.id))
+            whatsapp_delivered = (pa.context or {}).get("whatsapp_delivered") if pa else None
+            if whatsapp_delivered is False:
+                lines.append(f"- 📬 Found in email but couldn't reach you: {e.title} on {date_str}")
+            else:
+                lines.append(f"- ⏳ Still waiting for confirmation: {e.title} on {date_str}")
+        pending_text = (
+            "Pending confirmations:\n"
+            + "\n".join(lines)
+            + "\nReply 'confirm [event name]' to add to calendar"
+        )
+
+    sections = [s for s in [events_text, deadlines_text, transport_text, pending_text] if s]
     context = "\n\n".join(sections)
 
     prompt = f"""\
@@ -176,14 +245,30 @@ async def generate_weekly_summary(
     # Events needing RSVP
     rsvp_events = await event_dal.get_events_needing_rsvp(session, family_id)
 
+    # Build name maps for attendee display
+    weekly_children = await children_dal.get_children_for_family(session, family_id)
+    weekly_child_map = {c.id: c.name for c in weekly_children}
+    weekly_caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+    weekly_cg_map = {c.id: c.name or c.whatsapp_phone for c in weekly_caregivers}
+
     # Build context
     events_text = ""
     if week_events:
         lines = []
         for e in week_events:
-            date_str = e.datetime_start.strftime("%a %b %d, %I:%M %p") if e.datetime_start else "TBD"
+            date_str = fmt_event_time(e, family_tz)
             location_str = f" at {e.location}" if e.location else ""
-            lines.append(f"- {date_str}: {e.title}{location_str}")
+            attendee_names = []
+            for ec in e.children:
+                name = weekly_child_map.get(ec.child_id)
+                if name:
+                    attendee_names.append(name)
+            for ec in e.caregivers:
+                name = weekly_cg_map.get(ec.caregiver_id)
+                if name:
+                    attendee_names.append(name)
+            attendee_str = f" [{', '.join(attendee_names)}]" if attendee_names else ""
+            lines.append(f"- {date_str}: {e.title}{location_str}{attendee_str}")
         events_text = "This week's events:\n" + "\n".join(lines)
     else:
         events_text = "This week's events:\nNo events scheduled."
@@ -201,7 +286,7 @@ async def generate_weekly_summary(
         lines = []
         for e in rsvp_events:
             deadline_str = (
-                e.rsvp_deadline.strftime("%a %b %d") if e.rsvp_deadline else "no deadline set"
+                fmt_dt(e.rsvp_deadline, family_tz, FMT_DATE_SHORT) if e.rsvp_deadline else "no deadline set"
             )
             lines.append(f"- {e.title}: RSVP by {deadline_str}")
         rsvp_text = "RSVPs needed:\n" + "\n".join(lines)
@@ -321,6 +406,9 @@ async def check_immediate_triggers(
 
     Returns a list of notification messages (empty if nothing triggered).
     """
+    family = await families_dal.get_family(session, family_id)
+    family_tz = family.timezone if family else "America/New_York"
+
     now = datetime.now(UTC)
     cutoff = now + timedelta(hours=48)
     messages: list[str] = []
@@ -329,7 +417,7 @@ async def check_immediate_triggers(
     rsvp_events = await event_dal.get_events_needing_rsvp(session, family_id)
     for event in rsvp_events:
         if event.rsvp_deadline and event.rsvp_deadline <= cutoff:
-            deadline_str = event.rsvp_deadline.strftime("%A %b %d at %I:%M %p")
+            deadline_str = fmt_dt(event.rsvp_deadline, family_tz, FMT_DATETIME_LONG)
             messages.append(
                 f"RSVP needed for \"{event.title}\" by {deadline_str}. "
                 f"Reply to let me know if you'd like to accept or decline."
@@ -345,12 +433,12 @@ async def check_immediate_triggers(
         if event.pick_up_by is None:
             needs.append("pick-up")
         if needs:
-            time_str = event.datetime_start.strftime("%A at %I:%M %p")
+            time_str = fmt_event_time(event, family_tz, "%A at %I:%M %p")
             if event.datetime_start <= urgent_cutoff:
                 # 4h urgent tier
                 messages.append(
                     f"⚠️ \"{event.title}\" at "
-                    f"{event.datetime_start.strftime('%I:%M %p')} TODAY still has no "
+                    f"{fmt_dt(event.datetime_start, family_tz, FMT_TIME)} TODAY still has no "
                     f"{' and '.join(needs)} assigned!"
                 )
             else:

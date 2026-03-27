@@ -223,9 +223,13 @@ Event {
   )
   title: string
   description: text (nullable)
-  children_involved: [uuid] (FK → Child)
+  children_involved: [uuid] (FK → Child, via event_children junction table)
+  caregivers_involved: [uuid] (FK → Caregiver, via event_caregivers junction table)
+  all_day: boolean (default false)
+  time_tbd: boolean (default false)
   datetime_start: timestamp
   datetime_end: timestamp (nullable)
+  time_explicit: boolean (default true)
   location: string (nullable)
   location_coordinates: point (nullable)
 
@@ -262,6 +266,31 @@ Event {
 }
 ```
 
+**Event time states:** Events have four possible time states, controlled by `all_day`, `time_tbd`, and `time_explicit`:
+
+| State | `all_day` | `time_tbd` | `time_explicit` | Display | GCal |
+|-------|-----------|------------|-----------------|---------|------|
+| Explicit time | false | false | true | "Mar 31, 5:30 PM" | dateTime |
+| Estimated time | false | false | false | "Mar 31, ~7:00 PM (est.)" | dateTime |
+| Time TBD | false | true | false | "Mar 31 (time TBD)" | date format |
+| All-day | true | false | n/a | "Mar 31 (all day)" | date format |
+
+- **Constraint:** `all_day` and `time_tbd` cannot both be true. All-day means the event genuinely spans the whole day (e.g., school holiday). Time TBD means the event has a specific time that is not yet known (e.g., "birthday party Saturday").
+- **`time_tbd` and `time_explicit` are DB columns** on the events table. `time_tbd` defaults to false; `time_explicit` defaults to true.
+- **Time TBD events** use `datetime_start` at midnight (same as all-day) and are rendered in GCal using the `date` format (not `dateTime`), with "(time TBD)" appended to the title.
+- **All-day events** also use `datetime_start` at midnight and render in GCal using the `date` format in the all-day banner.
+- **Estimated times** display with an "(est.)" suffix in WhatsApp but are written to GCal as normal `dateTime` events.
+- **TBD to timed promotion:** When a follow-up extraction provides a specific time for a time-TBD event, dedup/merge promotes it — `time_tbd` becomes `false`, `datetime_start` is updated to the specific time, and `time_explicit` becomes `true`.
+- **All-day to timed promotion:** When a follow-up email provides a specific time for an existing all-day event, dedup/merge promotes the event from all-day to timed — `all_day` becomes `false`, `datetime_start` is updated to the specific time, and `time_explicit` becomes `true`.
+- **Travel consolidation:** Departure or transport to an event is NOT created as a separate event. Instead, departure time becomes the event's `datetime_start` and travel details (directions, drive time, etc.) are folded into the prep checklist.
+- **Public event time estimation:** For well-known public events (e.g., major holidays, school start dates), the LLM may estimate `datetime_end` only (never `datetime_start`). When estimated, `time_explicit=false`.
+
+**Attendee inference rules:**
+- `children_involved` is populated by fuzzy-matching names in the message/email against the family's Child records (existing behavior).
+- `caregivers_involved` is populated by matching caregiver names or inferring from context. If a caregiver says "I have a work dinner," the sender is added as an attendee.
+- When displaying events in schedule queries and digests, attendee names are shown inline: `Soccer [Emma, Jake]`, `Book Club [Mom]`.
+- GCal event descriptions include attendee names (e.g., "Attendees: Emma, Jake").
+
 ### 5.5 Recurring Schedule
 
 A generalized model for any activity that repeats on a pattern over a bounded time period. Covers sports seasons, weekly music lessons, tutoring sessions, swim classes, after-school programs, religious education, and any other recurring activity.
@@ -270,7 +299,8 @@ A generalized model for any activity that repeats on a pattern over a bounded ti
 RecurringSchedule {
   id: uuid
   family_id: uuid (FK → Family)
-  child_id: uuid (FK → Child)
+  child_id: uuid (nullable, FK → Child)
+  caregiver_id: uuid (nullable, FK → Caregiver — for caregiver-only recurring events like "Mom's book club")
   activity_name: string (e.g. "soccer", "piano lessons", "swim class")
   activity_type: enum (sport | music | academic | social | medical | other)
   pattern: string (e.g. "every Tuesday and Thursday, 4:00–5:30pm")
@@ -370,11 +400,30 @@ FamilyLearning {
 - Timezone inference: datetimes are extracted in ISO 8601 format with timezone offset, inferred from event location (e.g., Tempe AZ → America/Phoenix). Family timezone is used as fallback.
 
 **Deduplication:** Before creating a new Event, query the Event Registry for fuzzy matches:
-- Match criteria: `datetime_start` within ±30 minutes AND title similarity > 0.7 (cosine similarity on embeddings or simple token overlap)
+- Match criteria: `datetime_start` within ±30 minutes AND title similarity > 0.7 (cosine similarity on embeddings or simple token overlap) AND same `children_involved` set. For all-day event candidates, same-date matching is used instead of ±30 min window.
+- Events with the same title/time but different children are treated as distinct events (e.g., "Soccer Practice" for Emma and "Soccer Practice" for Jake are two events).
 - If match found: merge — email-extracted data enriches the existing record. Email is the richer source for prep, RSVP, and action item data.
 - If datetime conflicts between email and calendar source: flag to group, do not silently resolve.
 
-**Event confirmation flow:** Extracted events are not auto-persisted. Instead, each event creates a `PendingAction` (type: `event_confirmation`) and sends a WhatsApp interactive button message with Yes/No buttons to the family group. The event is only created in the Event Registry when a caregiver confirms. Action items and learnings from the same email are still auto-persisted (AUTO mode).
+**Event confirmation flow:** Email-extracted events are created immediately in the Event Registry with `confirmed_by_caregiver=false` and pushed to GCal as tentative (`status: "tentative"`, `transparency: "transparent"`). Tentative events appear striped/faded in the GCal UI, giving caregivers visibility without blocking their calendar time. A `PendingAction` (type: `event_confirmation`) is created referencing the `event_id` (not a full event data blob). A WhatsApp interactive button message with Yes/No buttons is sent to all caregivers in the family. When a caregiver confirms, the event is marked `confirmed_by_caregiver=true` and the GCal event is updated to `status: "confirmed"`. When dismissed, the GCal event is deleted. Events added directly to GCal (via webhook or reconciler import) are always treated as confirmed (`confirmed_by_caregiver=true`). Action items and learnings from the same email are still auto-persisted (AUTO mode).
+
+**Event lifecycle states:**
+
+```
+Email extracted → Event created (confirmed_by_caregiver=false), GCal tentative event created
+  ├── User confirms → confirmed_by_caregiver=true, GCal updated to confirmed
+  ├── User dismisses → cancelled_at set (soft delete), GCal event deleted
+  ├── GCal sync imports same → auto-confirmed (GCal wins)
+  ├── Updated email arrives → unconfirmed event updated, new buttons sent
+  ├── Event date passes → auto-cancelled (digest cleanup)
+  └── Late reply after expiry → confirmed directly via event lookup
+```
+
+- **PendingAction stores `event_id` reference**, not a full event data blob. The event already exists in the events table.
+- **WhatsApp delivery status** is tracked in the PendingAction context field. If delivery fails, the event remains unconfirmed but is resurfaced in the daily digest.
+- **Unconfirmed events are resurfaced in the daily digest.** Past unconfirmed events are auto-cancelled during digest generation.
+- **Schedule queries show both confirmed and unconfirmed events.** Unconfirmed events are annotated with "(pending confirmation)" in query results and digests.
+- **Partial extraction resilience:** When extraction returns multiple events and some fail validation, the valid events and action items are still persisted. Failures are logged but do not block the rest.
 
 **Confidence scoring:** Each extraction includes a confidence score (0.0–1.0). Events below 0.6 confidence are surfaced with an explicit "Is this right?" prompt. Events above 0.6 are surfaced with implicit correction opportunity.
 
@@ -440,6 +489,10 @@ FamilyLearning {
 
 **Schedule queries use local DB as authoritative source:** When a user asks "what's on my schedule," the system queries the local Event Registry first. GCal changes are continuously imported via webhooks and periodic reconciliation. Falls back to GCal API if local DB has no events for the family.
 
+**Per-person schedule queries:** Queries like "What's Emma's schedule?" or "What does Jake have this week?" filter events by attendee — matching against both `children_involved` and `caregivers_involved`. Results show attendee names inline (e.g., `Soccer [Emma, Jake]`).
+
+**Caregiver scheduling conflict detection:** When a caregiver is an attendee on two events with overlapping times, the system detects and surfaces the conflict (e.g., "You have Book Club at 7pm and Parent Night at 7:30pm — these overlap"). This extends the existing cross-child conflict detection to cover caregiver-as-attendee scenarios.
+
 **Voice note handling:** Audio messages from WhatsApp are first sent to Whisper API for transcription, then the transcript is processed through the same intent classification pipeline as text messages.
 
 ### 6.4 Calendar Coordinator Agent
@@ -478,7 +531,7 @@ Transport coordination only runs when ALL of these are true:
 - The event has a `child_id` (it's a child event, not a parent/family event)
 - The family has 2+ active caregivers
 
-If the family has only 1 active caregiver, transport is auto-assigned to that caregiver silently — no prompts, no "who's handling?" questions. If the family has no children, the entire transport subsystem is skipped.
+If the family has only 1 active caregiver, transport is auto-assigned to that caregiver silently — no prompts, no "who's handling?" questions. If the family has no children, the entire transport subsystem is skipped. Caregiver-only events (events with caregiver attendees but no child attendees) also skip transport coordination.
 
 **Transport assignment on event creation:**
 

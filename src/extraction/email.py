@@ -11,12 +11,13 @@ import logging
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.ingestion.schemas import EmailContent
-from src.llm import classify, extract
+from src.llm import ExtractionValidationError, classify, extract
 from src.state import children as children_dal
+from src.state import families as families_dal
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 class ExtractedEvent(BaseModel):
     """A single event extracted from an email."""
 
-    title: str
+    title: str = Field(validation_alias=AliasChoices("title", "event_name", "name", "summary"))
     event_type: str = Field(
         default="other",
         description="One of: birthday_party, sports_practice, sports_game, school_event, "
@@ -39,6 +40,10 @@ class ExtractedEvent(BaseModel):
     location: str | None = None
     description: str | None = None
     child_names: list[str] = Field(default_factory=list, description="Names of children involved")
+    caregiver_names: list[str] = Field(
+        default_factory=list,
+        description="Names of caregivers/parents who are attendees of this event",
+    )
     rsvp_needed: bool = False
     rsvp_deadline: datetime | None = None
     rsvp_method: str | None = None
@@ -46,14 +51,29 @@ class ExtractedEvent(BaseModel):
     confidence: float = Field(
         default=0.5, ge=0.0, le=1.0, description="Extraction confidence score"
     )
+    all_day: bool = Field(
+        default=False,
+        description="True if the event genuinely spans the whole day (school holiday, field day). "
+        "NOT for events where the time is simply unknown.",
+    )
+    time_tbd: bool = Field(
+        default=False,
+        description="True if date is known but time is undetermined (birthday party Saturday, dentist Tuesday). "
+        "When true, datetime_start is midnight of the event date. Cannot be true if all_day is true.",
+    )
+    time_explicit: bool = Field(
+        default=False,
+        description="True if the email explicitly stated a specific time. "
+        "False if time was estimated or not mentioned.",
+    )
 
     # Recurrence fields
     is_recurring: bool = False
     recurrence_pattern: str | None = None
     recurrence_freq: str | None = None
-    recurrence_days: list[str] = Field(default_factory=list)
+    recurrence_days: list[str] | None = None
     recurrence_until: datetime | None = None
-    recurrence_interval: int = 1
+    recurrence_interval: int | None = None
 
 
 class ExtractedActionItem(BaseModel):
@@ -81,7 +101,7 @@ class ExtractedLearning(BaseModel):
             "pref_prep, pref_delegation, pref_decision"
         )
     )
-    fact: str
+    fact: str = Field(validation_alias=AliasChoices("fact", "insight", "detail", "learning"))
     entity_type: str | None = Field(
         default=None, description="child, caregiver, or external_contact"
     )
@@ -190,9 +210,83 @@ Extract the following from the email:
    - If the location is known, use that location's timezone for the event time.
    - If no location is given, use the family's timezone from the context below.
    - Example: "7AM" for an event in Tempe, AZ → "2026-03-22T07:00:00-07:00"
-   - If the email mentions a date (e.g., "this Saturday", "March 28th") but no specific time,
-     use a reasonable default time (e.g., 9:00 AM).
-   - If no date at all can be determined, do NOT create an event.
+
+   CRITICAL TIME RULES (four tiers):
+
+   1. EXPLICIT TIME: Email states a specific time (e.g., "3pm", "at 10:00", "noon").
+      → time_explicit=true, all_day=false, time_tbd=false
+      → datetime_start = the stated time
+
+   2. ESTIMATED TIME: No specific time stated but you can reasonably estimate the start
+      time based on the event type (e.g., "baseball game" → ~7pm, "swim meet" → ~9am).
+      → time_explicit=false, all_day=false, time_tbd=false
+      → datetime_start = your best estimate
+      → Note in description that time is estimated
+
+   3. TIME TBD: Date is known but time is unknown, AND the event clearly has a specific
+      time that just wasn't mentioned (e.g., "birthday party on Saturday", "dentist
+      appointment next Tuesday", "piano recital in March").
+      → time_tbd=true, all_day=false, time_explicit=false
+      → datetime_start = midnight (00:00) of that date
+      → Do NOT estimate a time — this event genuinely has an unknown time
+
+   4. ALL-DAY: The event genuinely spans the entire day with no specific start time
+      (e.g., "school holiday", "field day", "no school Friday", "spring break",
+      "PD day", "March break").
+      → all_day=true, time_tbd=false, time_explicit=false
+      → datetime_start = midnight (00:00) of that date
+
+   KEY DISTINCTION between time_tbd and all_day:
+   - "Emma's birthday party on March 15" → time_tbd=true (party has a time, we don't know it)
+   - "No school on March 15" → all_day=true (genuinely all-day)
+   - "School field day on March 15" → all_day=true (spans the school day)
+   - "Dentist on Tuesday" → time_tbd=true (appointment has a specific time)
+   - "Spring break March 10-14" → all_day=true (genuinely spans days)
+
+   If no date at all can be determined, do NOT create an event.
+
+   DURATION ESTIMATION:
+   - Always estimate `datetime_end` based on the type of event, even when `datetime_start`
+     is explicit. Use your knowledge of typical durations:
+     - Kids' birthday party: ~2-3 hours
+     - Soccer/baseball practice: ~1.5 hours
+     - Professional sports game: ~3 hours
+     - School concert/recital: ~1.5 hours
+     - Swim meet: ~3-4 hours
+     - Doctor/dentist appointment: ~1 hour
+     - Play date: ~2 hours
+   - When estimating, note it in the description (e.g., "estimated end ~10 PM").
+   - Do NOT estimate duration for time_tbd or all_day events.
+
+   TRAVEL CONSOLIDATION:
+   - Travel, departure, or transportation TO an event is NOT a separate event.
+   - Create ONE event combining the travel and the event itself.
+   - Use the earliest time the family needs to act as `datetime_start` (e.g., departure
+     at 5:30 PM → datetime_start=17:30).
+   - Use the estimated event end time as `datetime_end`.
+   - Include travel details in the description/prep checklist.
+
+   Example WITH transport: email says "Blue Jays game, meet at GO station at 5:30 PM"
+     → datetime_start=17:30 (explicit departure), datetime_end=22:00 (estimated game end)
+     → time_explicit=true, time_tbd=false, all_day=false
+     → description: "☐ Take 5:30 PM train from Oakville GO → Rogers Centre
+        ~7:07 PM Blue Jays game (est. end ~10:00 PM)"
+
+   Example WITHOUT transport: email says "Blue Jays game on March 31"
+     → datetime_start=19:07 (estimated game start), datetime_end=22:07 (estimated end)
+     → time_explicit=false, time_tbd=false, all_day=false
+     → description: "Blue Jays game at Rogers Centre (times estimated)"
+
+   Example with explicit time: email says "Soccer practice at 4pm on Tuesday"
+     → datetime_start=16:00 (explicit), datetime_end=17:30 (estimated ~1.5 hrs)
+     → time_explicit=true, time_tbd=false, all_day=false
+
+   Example time TBD: email says "Emma's birthday party is March 15"
+     → datetime_start=midnight March 15, time_tbd=true, all_day=false
+     → description: "Emma's birthday party (time TBD)"
+
+   Example all-day: email says "No school on Friday for PD day"
+     → datetime_start=midnight Friday, all_day=true, time_tbd=false
 
    For event descriptions, be DETAILED. Include:
    - A clear summary of what the event is
@@ -202,6 +296,17 @@ Extract the following from the email:
    - Which child/children are involved (if applicable)
    - Any logistics details (parking, drop-off instructions, what to wear, etc.)
    - Format prep tasks as a checklist using "☐" for incomplete items
+
+   For each event, identify WHO the event is for:
+   - If the event mentions specific children (e.g., "Emma's soccer practice"), put those
+     names in child_names.
+   - If the event is for a caregiver/parent (e.g., "work dinner", "date night", "Mom's dentist"),
+     put the caregiver name(s) in caregiver_names.
+   - If a child event also has a parent attending (e.g., "field trip — parent volunteer needed"),
+     include both child_names and caregiver_names.
+   - If the email sender is clearly the attendee (e.g., "my work dinner", "I have a meeting"),
+     put the sender's name in caregiver_names.
+   - If no specific person is mentioned, leave both lists empty.
 
    Example description for a kids' baseball game:
    "13u travel baseball game vs. Nor Cal Prospects Black.
@@ -248,9 +353,7 @@ async def extract_from_email(
     """Tier 2: Sonnet structured extraction of events, action items, learnings."""
 
     # Build family context (children names, activities, timezone) for better extraction
-    from src.state import families as fam_dal
-
-    family = await fam_dal.get_family(session, family_id)
+    family = await families_dal.get_family(session, family_id)
     family_tz = family.timezone if family else "America/New_York"
 
     children = await children_dal.get_children_for_family(session, family_id)
@@ -262,10 +365,18 @@ async def extract_from_email(
             child_lines.append(f"- {c.name} (activities: {activities_str})")
         children_context = "Family children:\n" + "\n".join(child_lines)
 
+    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+    caregivers_context = ""
+    if caregivers:
+        cg_lines = [f"- {c.name}" for c in caregivers if c.name]
+        if cg_lines:
+            caregivers_context = "Family caregivers:\n" + "\n".join(cg_lines)
+
     # Wrap email content in data block — NEVER let email content be interpreted as instructions
     prompt = f"""\
 Family timezone: {family_tz}
 {children_context}
+{caregivers_context}
 
 <email_data>
 From: {email.from_address}
@@ -277,13 +388,24 @@ Date: {email.date.isoformat() if email.date else "unknown"}
 </email_data>
 
 Extract all events, action items, and learnings from the email above.
-For child_names, match against the known children when possible."""
+For child_names, match against the known children when possible.
+For caregiver_names, match against the known caregivers when possible."""
 
-    result = await extract(
-        prompt=prompt,
-        system=_EXTRACTION_SYSTEM,
-        schema=ExtractionResult,
-    )
+    try:
+        result = await extract(
+            prompt=prompt,
+            system=_EXTRACTION_SYSTEM,
+            schema=ExtractionResult,
+        )
+    except ExtractionValidationError as exc:
+        # Full validation failed — salvage individual items from the raw data
+        logger.warning(
+            "Full extraction validation failed for message_id=%s: %s. "
+            "Attempting partial salvage.",
+            email.message_id,
+            exc.validation_error,
+        )
+        result = _salvage_partial_extraction(email.message_id, exc.raw_data)
 
     logger.info(
         "Email extraction: message_id=%s events=%d action_items=%d learnings=%d",
@@ -293,6 +415,74 @@ For child_names, match against the known children when possible."""
         len(result.learnings),
     )
     return result
+
+
+def _salvage_partial_extraction(
+    message_id: str, raw: dict
+) -> ExtractionResult:
+    """Validate each item individually from raw LLM output.
+
+    If one event (or action item / learning) has invalid data, it is skipped
+    with a warning. Valid items are kept. No second LLM call is needed — the
+    raw data comes from the ExtractionValidationError raised by extract().
+    """
+    events: list[ExtractedEvent] = []
+    for i, raw_event in enumerate(raw.get("events", [])):
+        try:
+            events.append(ExtractedEvent.model_validate(raw_event))
+        except ValidationError as ve:
+            logger.warning(
+                "Skipping invalid event %d for message_id=%s: %s",
+                i,
+                message_id,
+                ve,
+            )
+
+    action_items: list[ExtractedActionItem] = []
+    for i, raw_item in enumerate(raw.get("action_items", [])):
+        try:
+            action_items.append(ExtractedActionItem.model_validate(raw_item))
+        except ValidationError as ve:
+            logger.warning(
+                "Skipping invalid action_item %d for message_id=%s: %s",
+                i,
+                message_id,
+                ve,
+            )
+
+    learnings: list[ExtractedLearning] = []
+    for i, raw_learning in enumerate(raw.get("learnings", [])):
+        try:
+            learnings.append(ExtractedLearning.model_validate(raw_learning))
+        except ValidationError as ve:
+            logger.warning(
+                "Skipping invalid learning %d for message_id=%s: %s",
+                i,
+                message_id,
+                ve,
+            )
+
+    email_summary = raw.get("email_summary", "")
+
+    logger.info(
+        "Partial salvage for message_id=%s: %d/%d events, %d/%d action_items, "
+        "%d/%d learnings kept.",
+        message_id,
+        len(events),
+        len(raw.get("events", [])),
+        len(action_items),
+        len(raw.get("action_items", [])),
+        len(learnings),
+        len(raw.get("learnings", [])),
+    )
+
+    return ExtractionResult(
+        is_relevant=True,
+        events=events,
+        action_items=action_items,
+        learnings=learnings,
+        email_summary=email_summary,
+    )
 
 
 # ── Main pipeline entry point ──────────────────────────────────────────

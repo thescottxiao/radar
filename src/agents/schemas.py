@@ -34,6 +34,10 @@ class ExtractedEvent(BaseModel):
         default_factory=list,
         description="Names of children this event is for",
     )
+    caregiver_names: list[str] = Field(
+        default_factory=list,
+        description="Names of caregivers/parents who are attendees of this event",
+    )
     description: str | None = Field(default=None, description="Additional details")
     is_recurring: bool = Field(default=False, description="Whether this is a recurring event")
     recurrence_pattern: str | None = Field(
@@ -51,6 +55,7 @@ class ResolvedEvent(BaseModel):
     datetime_end: datetime | None = None
     location: str | None = None
     child_ids: list[UUID] = Field(default_factory=list)
+    caregiver_ids: list[UUID] = Field(default_factory=list)
     description: str | None = None
     is_recurring: bool = False
     recurrence_pattern: str | None = None
@@ -68,7 +73,7 @@ class Conflict(BaseModel):
     existing_event_end: datetime | None = None
     existing_event_location: str | None = None
     conflict_type: str = Field(
-        description="One of: time_overlap, child_double_book, location_impossible"
+        description="One of: time_overlap, child_double_book, caregiver_double_book, location_impossible"
     )
     description: str = Field(description="Human-readable conflict description")
     child_names: list[str] = Field(
@@ -91,6 +96,14 @@ class ExtractedUpdate(BaseModel):
     new_end_time_str: str | None = Field(default=None, description="New end time if changed")
     new_location: str | None = Field(default=None, description="New location if changed")
     new_title: str | None = Field(default=None, description="New title if changed")
+    new_child_names: list[str] | None = Field(
+        default=None,
+        description="Updated list of children for this event, if attendees changed",
+    )
+    new_caregiver_names: list[str] | None = Field(
+        default=None,
+        description="Updated list of caregiver attendees for this event, if attendees changed",
+    )
     additional_notes: str | None = Field(default=None)
 
 

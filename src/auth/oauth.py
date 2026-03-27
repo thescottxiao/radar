@@ -111,7 +111,9 @@ async def handle_callback(
     # Decode state to get family + caregiver info + PKCE code_verifier
     state_data = decode_state(state)
     family_id: UUID = state_data["family_id"]
-    caregiver_phone: str = state_data["caregiver_phone"]
+    from src.utils.phone import normalize_phone
+
+    caregiver_phone: str = normalize_phone(state_data["caregiver_phone"])
     code_verifier: str | None = state_data.get("code_verifier")
 
     # Look up or create caregiver

@@ -4,7 +4,7 @@ import enum
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 # ── Intent classification ───────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ class IntentResult(BaseModel):
 class ExtractedEvent(BaseModel):
     """Structured event data extracted from text."""
 
-    title: str
+    title: str = Field(validation_alias=AliasChoices("title", "event_name", "name", "summary"))
     event_type: str = "other"
     datetime_start: datetime | None = None
     datetime_end: datetime | None = None
@@ -59,7 +59,18 @@ class ExtractedEvent(BaseModel):
     time_explicit: bool = Field(
         default=False,
         description="True if the user explicitly stated a specific time (e.g., '3pm', 'at 10:00', 'noon'). "
-        "False if time was inferred from vague terms like 'morning', 'evening', 'afternoon', or not mentioned.",
+        "False if time was inferred, estimated, or not mentioned.",
+    )
+    all_day: bool = Field(
+        default=False,
+        description="True if the event genuinely spans the whole day (school holiday, field day). "
+        "NOT for events where the time is simply unknown.",
+    )
+    time_tbd: bool = Field(
+        default=False,
+        description="True if the date is known but the specific time has not been determined yet. "
+        "Use for events like 'birthday party on Saturday' where a time exists but wasn't stated. "
+        "When true, datetime_start is midnight of the event date. Cannot be true if all_day is true.",
     )
 
     # Recurrence fields
@@ -75,16 +86,16 @@ class ExtractedEvent(BaseModel):
         default=None,
         description="Recurrence frequency: WEEKLY, MONTHLY, or DAILY.",
     )
-    recurrence_days: list[str] = Field(
-        default_factory=list,
+    recurrence_days: list[str] | None = Field(
+        default=None,
         description="Days of the week for recurrence using 2-letter codes: MO, TU, WE, TH, FR, SA, SU.",
     )
     recurrence_until: datetime | None = Field(
         default=None,
         description="End date for recurrence. None = indefinite.",
     )
-    recurrence_interval: int = Field(
-        default=1,
+    recurrence_interval: int | None = Field(
+        default=None,
         description="Interval for recurrence. 2 = biweekly for WEEKLY freq.",
     )
 

@@ -2,7 +2,7 @@ import logging
 from typing import TypeVar
 
 import anthropic
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from src.config import settings
 
@@ -12,6 +12,19 @@ T = TypeVar("T", bound=BaseModel)
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-20250514"
+
+
+class ExtractionValidationError(Exception):
+    """Raised when LLM output fails Pydantic validation.
+
+    Carries the normalized raw data so callers can attempt partial salvage
+    without making a second LLM call.
+    """
+
+    def __init__(self, raw_data: dict, validation_error: ValidationError):
+        self.raw_data = raw_data
+        self.validation_error = validation_error
+        super().__init__(str(validation_error))
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -35,7 +48,11 @@ async def classify(prompt: str, system: str, model: str = HAIKU_MODEL) -> str:
 async def extract(
     prompt: str, system: str, schema: type[T], model: str = SONNET_MODEL
 ) -> T:
-    """Structured extraction using Sonnet with tool_use for JSON output."""
+    """Structured extraction using Sonnet with tool_use for JSON output.
+
+    Raises ExtractionValidationError (with raw_data attached) if the LLM
+    output fails Pydantic validation, allowing callers to salvage partial results.
+    """
     client = _get_client()
     tool_schema = schema.model_json_schema()
     # Remove $defs from the schema root and inline if needed
@@ -59,7 +76,12 @@ async def extract(
     for block in response.content:
         if block.type == "tool_use":
             data = _normalize_extraction(block.input)
-            return schema.model_validate(data)
+            try:
+                return schema.model_validate(data)
+            except ValidationError as ve:
+                raise ExtractionValidationError(
+                    raw_data=data, validation_error=ve
+                ) from ve
 
     raise ValueError("No tool_use block in response")
 

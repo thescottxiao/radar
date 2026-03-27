@@ -33,6 +33,10 @@ async def process_outbox_loop() -> None:
                 async with session.begin():
                     items = await outbox_dal.claim_pending_items(session, batch_size=10)
                     item_ids = [item.id for item in items]
+                    if item_ids:
+                        logger.info("Outbox claimed %d items: %s", len(item_ids), [(str(i.id)[:8], str(i.operation)) for i in items])
+                    else:
+                        logger.debug("Outbox poll: 0 pending items")
 
             # Process each item in its own transaction for isolation
             for item_id in item_ids:
@@ -97,7 +101,7 @@ async def _handle_create(session: AsyncSession, item: GcalOutboxItem) -> None:
         return
 
     # Skip cancelled events
-    if event.description and "[CANCELLED]" in event.description:
+    if event.cancelled_at is not None:
         logger.info("Event %s is cancelled, skipping create", item.event_id)
         await outbox_dal.mark_done(session, item)
         return
@@ -111,9 +115,12 @@ async def _handle_create(session: AsyncSession, item: GcalOutboxItem) -> None:
         )
         return
 
+    logger.info("Outbox creating GCal event for %s ('%s')", item.event_id, event.title)
     gcal_ids = await create_calendar_event(session, item.family_id, event)
     if gcal_ids:
         logger.info("Outbox created GCal event(s) %s for event %s", gcal_ids, item.event_id)
+    else:
+        logger.warning("Outbox create returned no GCal IDs for event %s — GCal write may have silently failed", item.event_id)
 
 
 async def _handle_update(session: AsyncSession, item: GcalOutboxItem) -> None:
@@ -134,12 +141,13 @@ async def _handle_update(session: AsyncSession, item: GcalOutboxItem) -> None:
         return
 
     # Skip cancelled events
-    if event.description and "[CANCELLED]" in event.description:
+    if event.cancelled_at is not None:
         logger.info("Event %s is cancelled, skipping update", item.event_id)
         await outbox_dal.mark_done(session, item)
         return
 
     await update_calendar_event(session, item.family_id, event)
+    logger.info("Outbox updated GCal event for event %s", item.event_id)
 
 
 async def _handle_patch(session: AsyncSession, item: GcalOutboxItem) -> None:
@@ -152,6 +160,7 @@ async def _handle_patch(session: AsyncSession, item: GcalOutboxItem) -> None:
         return
 
     await patch_calendar_event(session, item.family_id, gcal_id, item.payload)
+    logger.info("Outbox patched GCal event %s", gcal_id)
 
 
 async def _handle_delete(session: AsyncSession, item: GcalOutboxItem) -> None:
@@ -161,9 +170,11 @@ async def _handle_delete(session: AsyncSession, item: GcalOutboxItem) -> None:
     gcal_id = item.gcal_event_id
     if gcal_id:
         await delete_gcal_event_by_id(session, item.family_id, gcal_id)
+        logger.info("Outbox deleted GCal event %s", gcal_id)
     elif item.event_id:
         from src.state import events as events_dal
 
         event = await events_dal.get_event(session, item.family_id, item.event_id)
         if event:
             await delete_calendar_event(session, item.family_id, event)
+            logger.info("Outbox deleted GCal event for event %s", item.event_id)

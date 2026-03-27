@@ -13,6 +13,7 @@ from src.extraction.dedup import deduplicate_event
 from src.extraction.email import ExtractionResult
 from src.state import children as children_dal
 from src.state import events as event_dal
+from src.state import families as families_dal
 from src.state import learning as learning_dal
 from src.state.models import (
     ActionItemType,
@@ -54,6 +55,7 @@ async def persist_extraction(
     source: str = "email",
     source_ref: str | None = None,
     skip_events: bool = False,
+    confirmed: bool = True,
 ) -> list[Event]:
     """Persist extraction results: dedup events, create action items and learnings.
 
@@ -65,6 +67,10 @@ async def persist_extraction(
     If skip_events=True, events are not persisted (used when events go through
     the button confirmation flow instead of auto-persisting).
 
+    If confirmed=False, events are created with confirmed_by_caregiver=False
+    and NO GCal outbox entry is enqueued. Used for email-extracted events that
+    require caregiver confirmation before syncing to GCal.
+
     Returns list of created/merged Event objects.
     """
     event_source = _SOURCE_MAP.get(source, EventSource.email)
@@ -73,6 +79,10 @@ async def persist_extraction(
     # Resolve child names to IDs for linking
     children = await children_dal.get_children_for_family(session, family_id)
     child_name_map = {c.name.lower(): c.id for c in children}
+
+    # Resolve caregiver names to IDs for attendee linking
+    caregivers = await families_dal.get_caregivers_for_family(session, family_id)
+    caregiver_name_map = {c.name.lower(): c.id for c in caregivers if c.name}
 
     # ── Events ──────────────────────────────────────────────────────
     if skip_events:
@@ -92,12 +102,20 @@ async def persist_extraction(
             extracted_event,
             source=event_source,
             source_ref=source_ref,
+            confirmed=confirmed,
         )
 
         # Link children to event
         child_ids = resolve_child_names(extracted_event.child_names, child_name_map)
         if child_ids and is_new:
             await event_dal.link_children_to_event(session, family_id, event.id, child_ids)
+
+        # Link caregiver attendees to event
+        cg_names = getattr(extracted_event, "caregiver_names", [])
+        if cg_names and is_new:
+            cg_ids = resolve_child_names(cg_names, caregiver_name_map)  # same resolution logic
+            if cg_ids:
+                await event_dal.link_caregivers_to_event(session, family_id, event.id, cg_ids)
 
         # Flag low confidence for confirmation
         if extracted_event.confidence < CONFIDENCE_THRESHOLD:

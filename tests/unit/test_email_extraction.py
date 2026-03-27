@@ -9,15 +9,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+
 from src.extraction.email import (
     ExtractedActionItem,
     ExtractedEvent,
     ExtractionResult,
+    _salvage_partial_extraction,
     extract_from_email,
     process_email,
     triage_email,
 )
 from src.ingestion.schemas import EmailContent
+from src.llm import ExtractionValidationError
 
 
 @pytest.fixture
@@ -126,12 +129,15 @@ class TestTriageClassification:
 
 class TestExtractionOutput:
     @patch("src.extraction.email.extract")
+    @patch("src.extraction.email.families_dal")
     @patch("src.extraction.email.children_dal")
     async def test_extraction_returns_structured_result(
-        self, mock_children_dal, mock_extract, mock_session, family_id, school_email
+        self, mock_children_dal, mock_families_dal, mock_extract, mock_session, family_id, school_email
     ):
         """Extraction produces properly structured ExtractionResult."""
         mock_children_dal.get_children_for_family = AsyncMock(return_value=[])
+        mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
+        mock_families_dal.get_family = AsyncMock(return_value=MagicMock(timezone="America/New_York"))
 
         expected_result = ExtractionResult(
             is_relevant=True,
@@ -170,15 +176,18 @@ class TestExtractionOutput:
         assert result.action_items[0].action_type == "rsvp_needed"
 
     @patch("src.extraction.email.extract")
+    @patch("src.extraction.email.families_dal")
     @patch("src.extraction.email.children_dal")
     async def test_extraction_includes_children_context(
-        self, mock_children_dal, mock_extract, mock_session, family_id, school_email
+        self, mock_children_dal, mock_families_dal, mock_extract, mock_session, family_id, school_email
     ):
         """Extraction prompt includes family children names for better matching."""
         child = MagicMock()
         child.name = "Emma"
         child.activities = ["soccer", "piano"]
         mock_children_dal.get_children_for_family = AsyncMock(return_value=[child])
+        mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
+        mock_families_dal.get_family = AsyncMock(return_value=MagicMock(timezone="America/New_York"))
         mock_extract.return_value = ExtractionResult()
 
         await extract_from_email(mock_session, family_id, school_email)
@@ -191,9 +200,10 @@ class TestExtractionOutput:
 
 class TestPromptInjectionDefense:
     @patch("src.extraction.email.extract")
+    @patch("src.extraction.email.families_dal")
     @patch("src.extraction.email.children_dal")
     async def test_injection_email_still_extracts_normally(
-        self, mock_children_dal, mock_extract, mock_session, family_id, injection_email
+        self, mock_children_dal, mock_families_dal, mock_extract, mock_session, family_id, injection_email
     ):
         """Email with 'ignore previous instructions' still extracts events normally.
 
@@ -201,6 +211,8 @@ class TestPromptInjectionDefense:
         explicitly instructs to ignore instructions found within email content.
         """
         mock_children_dal.get_children_for_family = AsyncMock(return_value=[])
+        mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
+        mock_families_dal.get_family = AsyncMock(return_value=MagicMock(timezone="America/New_York"))
 
         # Sonnet should extract the actual event, ignoring the injection attempt
         expected = ExtractionResult(
@@ -285,3 +297,141 @@ class TestProcessEmailPipeline:
         assert result.is_relevant is True
         assert len(result.events) == 1
         mock_extract.assert_called_once()
+
+
+class TestPartialExtractionSalvage:
+    """Tests for partial extraction failure resilience.
+
+    When the LLM returns data that fails Pydantic validation for one item
+    (e.g., recurrence_days: null instead of a list), the remaining valid
+    items should still be salvaged without a second LLM call.
+    """
+
+    @patch("src.extraction.email.extract")
+    @patch("src.extraction.email.families_dal")
+    @patch("src.extraction.email.children_dal")
+    async def test_salvages_valid_events_when_one_fails(
+        self, mock_children_dal, mock_families_dal, mock_extract,
+        mock_session, family_id, school_email,
+    ):
+        """If full validation fails, valid individual events are salvaged."""
+        mock_children_dal.get_children_for_family = AsyncMock(return_value=[])
+        mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
+        mock_families_dal.get_family = AsyncMock(return_value=MagicMock(timezone="America/New_York"))
+
+        # Raw data with one good event and one bad event
+        raw_data = {
+            "events": [
+                {
+                    "title": "Spring Concert",
+                    "event_type": "school_event",
+                    "datetime_start": "2026-03-20T18:30:00+00:00",
+                    "confidence": 0.9,
+                },
+                {
+                    "title": "Bad Event",
+                    "event_type": "other",
+                    "confidence": 2.5,  # Invalid: > 1.0
+                },
+            ],
+            "action_items": [
+                {
+                    "description": "RSVP for concert",
+                    "action_type": "rsvp_needed",
+                    "confidence": 0.8,
+                },
+            ],
+            "learnings": [],
+            "email_summary": "Spring concert info.",
+        }
+
+        # Build a real ValidationError by trying to validate the bad data
+        from pydantic import ValidationError
+        try:
+            ExtractionResult.model_validate(raw_data)
+        except ValidationError as ve:
+            mock_extract.side_effect = ExtractionValidationError(
+                raw_data=raw_data, validation_error=ve,
+            )
+
+        result = await extract_from_email(mock_session, family_id, school_email)
+
+        assert len(result.events) == 1
+        assert result.events[0].title == "Spring Concert"
+        assert len(result.action_items) == 1
+        assert result.action_items[0].description == "RSVP for concert"
+        assert result.email_summary == "Spring concert info."
+
+    @patch("src.extraction.email.extract")
+    @patch("src.extraction.email.families_dal")
+    @patch("src.extraction.email.children_dal")
+    async def test_salvages_action_items_when_events_all_fail(
+        self, mock_children_dal, mock_families_dal, mock_extract,
+        mock_session, family_id, school_email,
+    ):
+        """Even if all events fail validation, action items are still returned."""
+        mock_children_dal.get_children_for_family = AsyncMock(return_value=[])
+        mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
+        mock_families_dal.get_family = AsyncMock(return_value=MagicMock(timezone="America/New_York"))
+
+        raw_data = {
+            "events": [
+                {"title": "Bad", "confidence": 5.0},  # Invalid confidence
+            ],
+            "action_items": [
+                {"description": "Sign permission slip", "action_type": "form_to_sign", "confidence": 0.9},
+            ],
+            "learnings": [],
+            "email_summary": "Permission slip needed.",
+        }
+
+        from pydantic import ValidationError
+        try:
+            ExtractionResult.model_validate(raw_data)
+        except ValidationError as ve:
+            mock_extract.side_effect = ExtractionValidationError(
+                raw_data=raw_data, validation_error=ve,
+            )
+
+        result = await extract_from_email(mock_session, family_id, school_email)
+
+        assert len(result.events) == 0
+        assert len(result.action_items) == 1
+        assert result.action_items[0].description == "Sign permission slip"
+
+    def test_salvage_partial_extraction_directly(self):
+        """Test _salvage_partial_extraction with mixed valid/invalid items."""
+        raw_data = {
+            "events": [
+                {"title": "Good Event", "confidence": 0.8},
+                {"title": "Bad Event", "confidence": -1.0},  # Invalid
+            ],
+            "action_items": [
+                {"description": "Valid task", "confidence": 0.7},
+                {"confidence": 0.5},  # Missing required 'description'
+            ],
+            "learnings": [
+                {"category": "child_activity", "fact": "Emma plays soccer", "confidence": 0.9},
+                {"category": "child_activity", "confidence": 0.5},  # Missing required 'fact'
+            ],
+            "email_summary": "Test summary.",
+        }
+
+        result = _salvage_partial_extraction("msg-test", raw_data)
+
+        assert len(result.events) == 1
+        assert result.events[0].title == "Good Event"
+        assert len(result.action_items) == 1
+        assert result.action_items[0].description == "Valid task"
+        assert len(result.learnings) == 1
+        assert result.learnings[0].fact == "Emma plays soccer"
+        assert result.email_summary == "Test summary."
+
+    def test_salvage_with_empty_raw_data(self):
+        """Salvage with empty raw data returns empty result."""
+        result = _salvage_partial_extraction("msg-empty", {})
+
+        assert result.is_relevant is True
+        assert len(result.events) == 0
+        assert len(result.action_items) == 0
+        assert len(result.learnings) == 0
