@@ -14,6 +14,7 @@ from src.llm import generate
 from src.state import events as event_dal
 from src.state import families as families_dal
 from src.state import learning as learning_dal
+from src.state import todos as todos_dal
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ async def generate_daily_digest(
 
     Includes:
     - Today's events
-    - Approaching deadlines (action items due within 48h)
+    - Todos due soon (within 48h)
     - Unclaimed transport (events with no drop_off_by or pick_up_by assigned)
 
     Returns None if nothing actionable (skip sending).
@@ -48,8 +49,8 @@ async def generate_daily_digest(
         session, family_id, today_start, today_end
     )
 
-    # Approaching deadlines (action items due within 48h)
-    upcoming_deadlines = await event_dal.get_action_items_due_soon(
+    # Todos due soon (within 48h)
+    upcoming_todos = await todos_dal.get_todos_due_soon(
         session, family_id, within_hours=48, family_timezone=family_tz
     )
 
@@ -63,11 +64,20 @@ async def generate_daily_digest(
     ]
 
     # Skip if nothing actionable
-    if not todays_events and not upcoming_deadlines and not unclaimed_transport:
+    if not todays_events and not upcoming_todos and not unclaimed_transport:
         logger.info("No actionable items for daily digest (family %s)", family_id)
         return None
 
     # Build context for LLM
+    # Build event-linked todo lookup
+    event_todo_map: dict[UUID, list] = {}
+    standalone_todos = []
+    for t in upcoming_todos:
+        if t.event_id:
+            event_todo_map.setdefault(t.event_id, []).append(t)
+        else:
+            standalone_todos.append(t)
+
     events_text = ""
     if todays_events:
         lines = []
@@ -76,15 +86,28 @@ async def generate_daily_digest(
             end_str = f" - {e.datetime_end.strftime('%I:%M %p')}" if e.datetime_end else ""
             location_str = f" at {e.location}" if e.location else ""
             lines.append(f"- {time_str}{end_str}: {e.title}{location_str}")
+            # Show linked todos under their event
+            for t in event_todo_map.pop(e.id, []):
+                due_str = t.due_date.strftime("%a %I:%M %p") if t.due_date else "soon"
+                overdue_tag = "OVERDUE — " if t.due_date and t.due_date <= now else ""
+                lines.append(f"  → {overdue_tag}{t.description} (due {due_str})")
         events_text = "Today's events:\n" + "\n".join(lines)
 
-    deadlines_text = ""
-    if upcoming_deadlines:
+    # Remaining event-linked todos (event not in today's list) go to standalone
+    for todos in event_todo_map.values():
+        standalone_todos.extend(todos)
+
+    todos_text = ""
+    if standalone_todos:
+        overdue = [t for t in standalone_todos if t.due_date and t.due_date <= now]
+        upcoming = [t for t in standalone_todos if t.due_date and t.due_date > now]
         lines = []
-        for ai in upcoming_deadlines:
-            due_str = ai.due_date.strftime("%a %I:%M %p") if ai.due_date else "soon"
-            lines.append(f"- {ai.description} (due {due_str})")
-        deadlines_text = "Approaching deadlines:\n" + "\n".join(lines)
+        for t in overdue:
+            lines.append(f"- OVERDUE: {t.description} (was due {t.due_date.strftime('%a %I:%M %p')})")
+        for t in upcoming:
+            due_str = t.due_date.strftime("%a %I:%M %p") if t.due_date else "soon"
+            lines.append(f"- {t.description} (due {due_str})")
+        todos_text = "Todos:\n" + "\n".join(lines)
 
     transport_text = ""
     if unclaimed_transport:
@@ -102,7 +125,7 @@ async def generate_daily_digest(
             )
         transport_text = "Transport status:\n" + "\n".join(lines)
 
-    sections = [s for s in [events_text, deadlines_text, transport_text] if s]
+    sections = [s for s in [events_text, todos_text, transport_text] if s]
     context = "\n\n".join(sections)
 
     prompt = f"""\
@@ -307,6 +330,53 @@ async def _graduate_confirmed_learnings(
             )
 
 
+# ── Todo Deadline Nudges ──────────────────────────────────────────────
+
+
+async def send_todo_deadline_nudges(
+    session: AsyncSession, family_id: UUID
+) -> int:
+    """Send standalone deadline nudges for todos within their reminder window.
+
+    Returns the number of nudges sent.
+    """
+    family = await families_dal.get_family(session, family_id)
+    family_tz = family.timezone if family else None
+
+    todos_to_nudge = await todos_dal.get_todos_needing_reminder(
+        session, family_id, family_timezone=family_tz
+    )
+
+    if not todos_to_nudge:
+        return 0
+
+    from src.actions.whatsapp import send_to_family
+
+    for todo in todos_to_nudge:
+        due_str = todo.due_date.strftime("%a %b %d") if todo.due_date else "soon"
+        # Reference parent event if linked
+        if todo.event_id:
+            event = await event_dal.get_event(session, family_id, todo.event_id)
+            if event:
+                message = f"Reminder: *{todo.description}* for *{event.title}* is due {due_str}."
+            else:
+                message = f"Reminder: *{todo.description}* is due {due_str}."
+        else:
+            message = f"Reminder: *{todo.description}* is due {due_str}."
+        try:
+            await send_to_family(session, family_id, message)
+            await todos_dal.mark_reminder_sent(session, family_id, todo.id)
+        except Exception:
+            logger.exception("Failed to send todo nudge for todo %s", todo.id)
+
+    logger.info(
+        "Sent %d todo deadline nudges for family %s",
+        len(todos_to_nudge),
+        family_id,
+    )
+    return len(todos_to_nudge)
+
+
 # ── Immediate Triggers ────────────────────────────────────────────────
 
 
@@ -318,6 +388,7 @@ async def check_immediate_triggers(
     Triggers:
     - RSVP deadline < 48h away and still pending
     - Unclaimed transport for events within 48h
+    - Todo deadlines within their reminder window
 
     Returns a list of notification messages (empty if nothing triggered).
     """
@@ -359,6 +430,9 @@ async def check_immediate_triggers(
                     f"\"{event.title}\" on {time_str} still needs "
                     f"{' and '.join(needs)} assigned. Who's handling it?"
                 )
+
+    # Note: Todo deadline nudges are handled separately by send_todo_deadline_nudges()
+    # which marks reminders as sent. We don't duplicate them here.
 
     if messages:
         logger.info(

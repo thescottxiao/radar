@@ -293,13 +293,13 @@ async def simulate_email(
 
         events_pending += 1
 
-    # Send a plain text summary for action items (if any, and no events)
-    if result.action_items and not result.events:
+    # Send a plain text summary for todos (if any, and no events)
+    if result.todos and not result.events:
         lines = [f"📧 *{request.subject}*", ""]
-        lines.append("*Action items:*")
-        for ai in result.action_items:
-            due_str = f" (due {ai.due_date.strftime('%b %d')})" if ai.due_date else ""
-            lines.append(f"• {ai.description}{due_str}")
+        lines.append("*Todos:*")
+        for todo in result.todos:
+            due_str = f" (due {todo.due_date.strftime('%b %d')})" if todo.due_date else ""
+            lines.append(f"• {todo.description}{due_str}")
         if result.email_summary:
             lines.append(f"\n_{result.email_summary}_")
         message = "\n".join(lines)
@@ -314,7 +314,7 @@ async def simulate_email(
         "status": "processed",
         "is_relevant": result.is_relevant,
         "events_pending_confirmation": events_pending,
-        "action_items": len(result.action_items),
+        "todos": len(result.todos),
         "learnings": len(result.learnings),
         "summary": result.email_summary,
     }

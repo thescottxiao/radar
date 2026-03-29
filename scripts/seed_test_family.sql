@@ -199,10 +199,10 @@ INSERT INTO event_children (event_id, child_id, family_id) VALUES
     ('d0000000-0000-0000-0000-000000000010', 'c0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000001')
 ON CONFLICT DO NOTHING;
 
--- ── Action Items ────────────────────────────────────────────────────
+-- ── Todos ──────────────────────────────────────────────────────────
 
 -- Permission slip for field trip (due in 3 days)
-INSERT INTO action_items (id, family_id, event_id, description, due_date, source, source_ref, status)
+INSERT INTO todos (id, family_id, event_id, description, due_date, source, source_ref, status)
 VALUES (
     'e0000000-0000-0000-0000-000000000001',
     'a0000000-0000-0000-0000-000000000001',
@@ -214,7 +214,7 @@ VALUES (
 ) ON CONFLICT (id) DO NOTHING;
 
 -- RSVP to Liam's birthday (due in 4 days)
-INSERT INTO action_items (id, family_id, event_id, description, due_date, source, source_ref, status)
+INSERT INTO todos (id, family_id, event_id, description, due_date, source, source_ref, status)
 VALUES (
     'e0000000-0000-0000-0000-000000000002',
     'a0000000-0000-0000-0000-000000000001',
@@ -226,7 +226,7 @@ VALUES (
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Bring snack for soccer game (due in 5 days)
-INSERT INTO action_items (id, family_id, event_id, description, due_date, source, source_ref, status)
+INSERT INTO todos (id, family_id, event_id, description, due_date, source, source_ref, status)
 VALUES (
     'e0000000-0000-0000-0000-000000000003',
     'a0000000-0000-0000-0000-000000000001',
@@ -238,7 +238,7 @@ VALUES (
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Summer camp registration deadline (due in 10 days)
-INSERT INTO action_items (id, family_id, description, due_date, source, source_ref, status, type)
+INSERT INTO todos (id, family_id, description, due_date, source, source_ref, status, type)
 VALUES (
     'e0000000-0000-0000-0000-000000000004',
     'a0000000-0000-0000-0000-000000000001',
@@ -426,10 +426,10 @@ INSERT INTO event_children (event_id, child_id, family_id) VALUES
     ('d0000000-0000-0000-0000-000000000018', 'c0000000-0000-0000-0000-000000000004', 'a0000000-0000-0000-0000-000000000002')
 ON CONFLICT DO NOTHING;
 
--- ── Action Items ────────────────────────────────────────────────────
+-- ── Todos ──────────────────────────────────────────────────────────
 
 -- RSVP to Ethan's birthday (due in 2 days)
-INSERT INTO action_items (id, family_id, event_id, description, due_date, source, source_ref, status)
+INSERT INTO todos (id, family_id, event_id, description, due_date, source, source_ref, status)
 VALUES (
     'e0000000-0000-0000-0000-000000000005',
     'a0000000-0000-0000-0000-000000000002',
@@ -441,7 +441,7 @@ VALUES (
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Buy new basketball shoes for Mia (due in 5 days)
-INSERT INTO action_items (id, family_id, description, due_date, source, source_ref, status, type)
+INSERT INTO todos (id, family_id, description, due_date, source, source_ref, status, type)
 VALUES (
     'e0000000-0000-0000-0000-000000000006',
     'a0000000-0000-0000-0000-000000000002',
@@ -453,7 +453,7 @@ VALUES (
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Spring concert volunteer sign-up (due in 4 days)
-INSERT INTO action_items (id, family_id, event_id, description, due_date, source, source_ref, status)
+INSERT INTO todos (id, family_id, event_id, description, due_date, source, source_ref, status)
 VALUES (
     'e0000000-0000-0000-0000-000000000007',
     'a0000000-0000-0000-0000-000000000002',
@@ -649,10 +649,10 @@ INSERT INTO event_children (event_id, child_id, family_id) VALUES
     ('d0000000-0000-0000-0000-000000000029', 'c0000000-0000-0000-0000-000000000006', 'a0000000-0000-0000-0000-000000000003')
 ON CONFLICT DO NOTHING;
 
--- ── Action Items ────────────────────────────────────────────────────
+-- ── Todos ──────────────────────────────────────────────────────────
 
 -- Buy recital costume for Lily (due in 3 days)
-INSERT INTO action_items (id, family_id, description, due_date, source, source_ref, status, type)
+INSERT INTO todos (id, family_id, description, due_date, source, source_ref, status, type)
 VALUES (
     'e0000000-0000-0000-0000-000000000008',
     'a0000000-0000-0000-0000-000000000003',
@@ -664,7 +664,7 @@ VALUES (
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Pack math team supplies (due in 3 days)
-INSERT INTO action_items (id, family_id, event_id, description, due_date, source, source_ref, status)
+INSERT INTO todos (id, family_id, event_id, description, due_date, source, source_ref, status)
 VALUES (
     'e0000000-0000-0000-0000-000000000009',
     'a0000000-0000-0000-0000-000000000003',
@@ -676,7 +676,7 @@ VALUES (
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Register Owen for summer swim camp (due in 8 days)
-INSERT INTO action_items (id, family_id, description, due_date, source, source_ref, status, type)
+INSERT INTO todos (id, family_id, description, due_date, source, source_ref, status, type)
 VALUES (
     'e0000000-0000-0000-0000-000000000010',
     'a0000000-0000-0000-0000-000000000003',

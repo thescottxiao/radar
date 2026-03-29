@@ -115,7 +115,7 @@ async def handle_forwarded_email(
     if not is_known_sender:
         for event in result.events:
             event.confidence = min(event.confidence, 0.5)
-        for item in result.action_items:
+        for item in result.todos:
             item.confidence = min(item.confidence, 0.5)
 
     # Persist results
@@ -132,7 +132,7 @@ async def handle_forwarded_email(
         family_id,
         email.subject[:50],
         len(result.events),
-        len(result.action_items),
+        len(result.todos),
     )
 
 

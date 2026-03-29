@@ -83,8 +83,10 @@ def _normalize_extraction(data: dict) -> dict:
         # LLM may use "name" instead of "title"
         if "title" not in event and "name" in event:
             event["title"] = event.pop("name")
-    # Normalize action items
-    for item in data.get("action_items", []):
+    # Normalize todos (with backward-compat for old "action_items" key)
+    if "todos" not in data and "action_items" in data:
+        data["todos"] = data.pop("action_items")
+    for item in data.get("todos", []):
         if "task" in item and "description" not in item:
             item["description"] = item.pop("task")
         if "type" in item and "action_type" not in item:

@@ -79,6 +79,7 @@ src/
 ├── state/            # Data access layer
 │   ├── models.py     # SQLAlchemy models matching docs/schema.sql
 │   ├── events.py     # Event Registry queries (CRUD, dedup, search)
+│   ├── todos.py      # Todo DAL (CRUD, reminders, fuzzy matching, child linking)
 │   ├── outbox.py     # GCal outbox DAL (enqueue, claim, mark done/failed)
 │   ├── families.py   # Family and Caregiver queries
 │   ├── children.py   # Child profile queries
@@ -129,7 +130,7 @@ src/
 
 1. **Email Extraction Agent uses two-tier model strategy:**
    - Haiku for triage (is this email relevant to any family member's activities, events, or scheduling — including adult/parent events?) — fast, cheap, ~80% rejection rate. Triage result is parsed with `startswith("RELEVANT")` to handle LLM explanations.
-   - Sonnet for full extraction (only on relevant emails) — structured output matching Event/ActionItem schemas. Extractions include detailed descriptions with prep checklists (☐ format) and timezone-aware datetimes (inferred from location, family timezone as fallback).
+   - Sonnet for full extraction (only on relevant emails) — structured output matching Event/Todo schemas. Extractions include detailed descriptions with prep checklists (☐ format) and timezone-aware datetimes (inferred from location, family timezone as fallback). Todos include `suggested_reminder_days` for smart deadline nudges.
 2. **Intent Router uses conversation context** (last 10 messages) for classification. Supports `event_update` intent for follow-up messages about recently confirmed events (e.g., "I already bought the wedding gift"). Uses two-tier matching: recent conversation → GCal search. Pending approvals are checked first — any reply to a pending SUGGEST action is classified as edit_instruction, approve, or dismiss.
 3. **All SUGGEST-mode actions require caregiver approval** before execution. The bot never sends external emails, RSVPs, or purchases autonomously. External emails are sent from Radar's own domain (not the caregiver's Gmail). A 10-second cancel window is shown after approval.
 4. **AUTO actions execute without approval** but are always logged and surfaced in digests.
@@ -146,11 +147,17 @@ src/
 14. **Transport routines are inferred, not asked.** After 3 consistent claims by the same caregiver for the same (recurring_schedule, day_of_week, role), create an unconfirmed FamilyLearning. Confirmed via weekly summary with no correction. Never ask "who usually handles pickup?" upfront.
 15. **Sibling transport conflicts are flagged, not resolved.** When the same caregiver is assigned to overlapping events (±30 min) for different children at different locations, notify all caregivers. Do not propose which caregiver should swap.
 16. **Transport swaps clear the instance, not the routine.** "I can't do pickup Thursday" clears that event's assignment but leaves the RecurringSchedule default intact for future weeks.
+17. **Todos are distinct from events and prep tasks.** Todos have their own deadline/lifecycle and require effort/time (buy gift, RSVP, sign form). Prep tasks are "have this when you leave" (bring shin guards, wear costume). Events have a physical location and start time.
+18. **Todos sync to GCal at their deadline date.** Timed if a specific time is known, all-day otherwise. Completed todos are deleted from GCal via outbox.
+19. **Email-extracted todos require button confirmation.** Same Yes/No pattern as events. If no due_date is extracted, the confirmation message asks the caregiver for one.
+20. **Smart reminder layering for todos.** Layer 1: type-based defaults (1-3 days by type). Layer 2: LLM `suggested_reminder_days` override from email context. Layer 3: guardrails (never after deadline, immediate nudge if within window at creation, one nudge per todo, overdue items in digest).
+21. **GCal event descriptions include structured sections.** Transport, Todos (linked), and Prep are formatted as distinct sections. Rebuilt idempotently on every GCal update.
+22. **Todos can be managed via WhatsApp.** Three intents: `add_todo`, `complete_todo`, `list_todos`. Todos list is grouped by urgency (overdue / today / this week / later).
 
 ### WhatsApp Rules
 
 1. **Bot-initiated messages require approved templates.** Free-form only within 24-hour windows.
-2. **Five template categories are pre-approved:** new_event, reminder, deadline_alert, approval_request, daily_digest, weekly_summary, assignment_nudge, conflict_alert.
+2. **Template categories are pre-approved:** new_event, reminder, deadline_alert, approval_request, daily_digest, weekly_summary, assignment_nudge, conflict_alert, todo_reminder.
 3. **Voice notes** — transcription deferred to Phase 4. Voice messages are not supported until then.
 4. **First response wins** when multiple caregivers reply simultaneously.
 5. **WhatsApp Business API is 1:1 only.** The bot cannot be added to group chats (current platform limitation). All messages are sent to individual caregivers. Notifications go to all caregivers in the family individually.
@@ -174,7 +181,7 @@ src/
 We are building in phases. Check which phase is current before working on features:
 
 - **Phase 1:** Calendar + Conversational Input (WhatsApp bot, GCal integration, basic scheduling, daily/weekly digests)
-- **Phase 2:** Email Ingestion + Extraction (Gmail push, Email Extraction Agent, ActionItems, dedup, ICS feeds, voice notes)
+- **Phase 2:** Email Ingestion + Extraction + Todos (Gmail push, Email Extraction Agent, Todos with GCal sync + smart reminders, dedup, ICS feeds, voice notes)
 - **Phase 3:** Logistics Intelligence (Logistics Planner, Research Agent, seasons, gap detection, full suggest UX)
 - **Phase 4:** Growth features (playdate networks, carpooling, work calendar overlay)
 

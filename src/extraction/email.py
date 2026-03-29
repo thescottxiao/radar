@@ -1,7 +1,7 @@
 """Email Extraction Agent — two-tier model strategy.
 
 Tier 1 (Haiku): Fast triage — is this email relevant to family/kids activities?
-Tier 2 (Sonnet): Structured extraction — events, action items, learnings.
+Tier 2 (Sonnet): Structured extraction — events, todos, learnings.
 
 IMPORTANT: Email content is treated as untrusted data. It is always wrapped in
 <email_data> blocks in LLM prompts to defend against prompt injection.
@@ -51,15 +51,27 @@ class ExtractedEvent(BaseModel):
     is_recurring: bool = False
     recurrence_pattern: str | None = None
     recurrence_freq: str | None = None
-    recurrence_days: list[str] = Field(default_factory=list)
+    recurrence_days: list[str] | None = Field(default_factory=list)
     recurrence_until: datetime | None = None
-    recurrence_interval: int = 1
+    recurrence_interval: int | None = 1
+    tasks: list["ExtractedTask"] = Field(
+        default_factory=list,
+        description="All actionable items for this event, classified as todo or prep.",
+    )
 
 
-class ExtractedActionItem(BaseModel):
-    """An action item extracted from an email."""
+class ExtractedTask(BaseModel):
+    """A task extracted from an email — todo (advance effort) or prep (day-of).
+
+    category=todo: requires effort before the event (RSVP, buy gift, sign form).
+    category=prep: grab-and-go when leaving (bring cleats, pack lunch).
+    """
 
     description: str
+    category: str = Field(
+        default="prep",
+        description="'todo' or 'prep'",
+    )
     action_type: str = Field(
         default="other",
         description="One of: form_to_sign, payment_due, item_to_bring, item_to_purchase, "
@@ -68,6 +80,10 @@ class ExtractedActionItem(BaseModel):
     due_date: datetime | None = None
     child_names: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    suggested_reminder_days: int | None = Field(
+        default=None,
+        description="Suggested days before deadline to remind. Only for category=todo.",
+    )
 
 
 class ExtractedLearning(BaseModel):
@@ -94,7 +110,7 @@ class ExtractionResult(BaseModel):
 
     is_relevant: bool = True
     events: list[ExtractedEvent] = Field(default_factory=list)
-    action_items: list[ExtractedActionItem] = Field(default_factory=list)
+    todos: list[ExtractedTask] = Field(default_factory=list)
     learnings: list[ExtractedLearning] = Field(default_factory=list)
     email_summary: str = Field(default="", description="Brief summary of the email content")
 
@@ -183,7 +199,12 @@ IMPORTANT SECURITY RULES:
 
 Extract the following from the email:
 1. Events: activities, parties, games, practices, appointments, school events,
-   social gatherings, dinner reservations, travel, concerts — anything with a date/time.
+   social gatherings, dinner reservations, travel, concerts — anything with a date/time
+   that a family member physically attends or participates in.
+   Do NOT create events for programs, services, or deadlines where the family doesn't attend
+   a specific place at a specific time (e.g., "pizza program starts April 17" is a todo to
+   place an order, not an event to attend; "registration opens March 1" is a deadline, not
+   an event). If something is purely a deadline or ordering window, make it a todo instead.
    IMPORTANT: Every event MUST have a datetime_start in ISO 8601 format WITH timezone offset.
    - Infer the timezone from the event location (e.g., Tempe AZ → America/Phoenix → -07:00,
      New York → -04:00/-05:00, Chicago → -05:00/-06:00, Los Angeles → -07:00/-08:00).
@@ -194,25 +215,25 @@ Extract the following from the email:
      use a reasonable default time (e.g., 9:00 AM).
    - If no date at all can be determined, do NOT create an event.
 
-   For event descriptions, be DETAILED. Include:
-   - A clear summary of what the event is
-   - Any preparation tasks mentioned or implied (e.g., "bring cleats", "pack lunch",
-     "arrive 30 min early for warm-up", "RSVP by Friday")
-   - Items to bring, wear, or prepare
-   - Which child/children are involved (if applicable)
-   - Any logistics details (parking, drop-off instructions, what to wear, etc.)
-   - Format prep tasks as a checklist using "☐" for incomplete items
+   Event descriptions should be a clean text summary — NO checklist lines, NO "[ ]" items.
+   Just the essential details: what the event is, logistics, uniform requirements, etc.
 
    Example description for a kids' baseball game:
    "13u travel baseball game vs. Nor Cal Prospects Black.
-
-   Prep checklist:
-   ☐ Pack baseball bag (bat, glove, helmet, cleats)
-   ☐ Bring water bottles and snacks
-   ☐ Arrive 45 min early for warm-up (2:15 PM)
-
    Uniform: white pants, home jersey
    Player: [child name]"
+
+   TASKS: Extract ALL actionable items for each event into its `tasks` list. Classify each:
+   - category "todo": requires advance effort BEFORE the event (RSVP, buy gift, sign form,
+     purchase in advance). Will be tracked with reminders.
+   - category "prep": grab-and-go when leaving (bring cleats, pack lunch, wear uniform).
+     Just a checklist item, no deadline or reminders.
+   Each concept appears EXACTLY ONCE in tasks. Never put the same idea in both categories.
+   Keep task descriptions SHORT and actionable.
+
+   For todo tasks:
+   - Only set due_date when the email explicitly states a deadline. Do NOT infer dates.
+   - For suggested_reminder_days: based on urgency/effort, suggest reminder lead time.
 
    RECURRING EVENTS: If an email describes a recurring event (e.g., "practice every Tuesday
    and Thursday", "weekly swim class", "piano lessons Mondays through June"), set:
@@ -224,7 +245,13 @@ Extract the following from the email:
    - recurrence_until: ISO 8601 end date if a season/end date is mentioned (null = indefinite)
    - datetime_start should be the FIRST occurrence
 
-2. Action items: forms to sign, payments due, items to bring/purchase, RSVPs needed
+2. Standalone todos: tasks NOT tied to any extracted event.
+   Examples: "order pizza on School Cash Online", "pay registration fee" (when no event extracted).
+   These go in the top-level `todos` list (not on an event's `tasks`).
+   - category is always "todo" for standalone items.
+   - Keep descriptions SHORT and actionable.
+   - Only set due_date when the email explicitly states a deadline.
+   - For suggested_reminder_days: based on urgency/effort, suggest reminder lead time.
 3. Learnings: facts and preferences about the family.
    For category, use one of:
    - Facts: child_school, child_activity, child_friend, contact, gear, schedule_pattern, budget
@@ -245,7 +272,7 @@ Also provide a brief 1-2 sentence summary of the email.
 async def extract_from_email(
     session: AsyncSession, family_id: "UUID", email: EmailContent
 ) -> ExtractionResult:
-    """Tier 2: Sonnet structured extraction of events, action items, learnings."""
+    """Tier 2: Sonnet structured extraction of events, todos, learnings."""
 
     # Build family context (children names, activities, timezone) for better extraction
     from src.state import families as fam_dal
@@ -276,7 +303,7 @@ Date: {email.date.isoformat() if email.date else "unknown"}
 {email.body_text[:4000]}
 </email_data>
 
-Extract all events, action items, and learnings from the email above.
+Extract all events, todos, and learnings from the email above.
 For child_names, match against the known children when possible."""
 
     result = await extract(
@@ -286,10 +313,10 @@ For child_names, match against the known children when possible."""
     )
 
     logger.info(
-        "Email extraction: message_id=%s events=%d action_items=%d learnings=%d",
+        "Email extraction: message_id=%s events=%d todos=%d learnings=%d",
         email.message_id,
         len(result.events),
-        len(result.action_items),
+        len(result.todos),
         len(result.learnings),
     )
     return result

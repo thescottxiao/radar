@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.auth.google_client import get_calendar_service, get_google_credentials
 from src.config import settings
 from src.state import families as families_dal
-from src.state.models import Caregiver, Event
+from src.state import todos as todos_dal
+from src.state.models import Caregiver, Event, Todo
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,9 @@ WATCH_RENEW_INTERVAL_DAYS = 5
 
 
 def event_to_gcal_body(
-    event: Event, caregiver_map: dict[UUID, str] | None = None
+    event: Event,
+    caregiver_map: dict[UUID, str] | None = None,
+    linked_todos: list[Todo] | None = None,
 ) -> dict:
     """Convert a Radar Event model to a Google Calendar API event body.
 
@@ -34,6 +37,7 @@ def event_to_gcal_body(
         event: The Radar Event model.
         caregiver_map: Optional mapping of caregiver UUID → display name,
             used to append a transport section to the description.
+        linked_todos: Optional list of todos linked to this event.
     """
     body: dict = {
         "summary": event.title,
@@ -41,23 +45,83 @@ def event_to_gcal_body(
         "end": {},
     }
 
-    description = event.description or ""
+    raw_description = event.description or ""
 
-    # Append transport section if assignments exist
-    if caregiver_map and (event.drop_off_by or event.pick_up_by):
-        # Strip any existing transport section before re-appending
-        transport_marker = "\n\n🚗 Transport"
-        if transport_marker in description:
-            description = description[: description.index(transport_marker)]
+    # Strip any existing structured sections before rebuilding (idempotent)
+    # Match section headers at start of line (with or without leading \n\n)
+    section_headers = ["📋 Todos", "🎒 Prep", "📝 Details", "🚗 Transport"]
+    base_description = raw_description
+    earliest = len(base_description)
+    for header in section_headers:
+        for prefix in ["\n\n" + header, "\n" + header]:
+            pos = base_description.find(prefix)
+            if pos != -1 and pos < earliest:
+                earliest = pos
+        # Also check if the description starts with a section header
+        if base_description.startswith(header):
+            earliest = 0
+    base_description = base_description[:earliest].strip()
 
+    # Extract prep items from the base description ([ ] or ☐ lines)
+    prep_lines = []
+    detail_lines = []
+    if base_description:
+        in_prep = False
+        for line in base_description.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith(("[ ]", "[x]", "☐", "☑")):
+                # Normalize old format to new
+                normalized = stripped.replace("☐ ", "[ ] ").replace("☑ ", "[x] ")
+                prep_lines.append(normalized)
+                in_prep = True
+            elif in_prep and not stripped:
+                in_prep = False
+                detail_lines.append(line)
+            else:
+                detail_lines.append(line)
+    details_text = "\n".join(detail_lines).strip()
+
+    # Build structured description: Todos → Prep → Details → Transport
+    sections: list[str] = []
+
+    # Todos section
+    todo_descriptions_lower: set[str] = set()
+    if linked_todos:
+        from src.state.models import TodoStatus
+        todo_lines = []
+        for t in linked_todos:
+            prefix = "[x]" if t.status == TodoStatus.complete else "[ ]"
+            due_str = f" by {t.due_date.strftime('%a %b %d')}" if t.due_date else ""
+            todo_lines.append(f"{prefix} {t.description}{due_str}")
+            todo_descriptions_lower.add(t.description.lower())
+        sections.append("📋 Todos\n" + "\n".join(todo_lines))
+
+    # Prep section (from extracted [ ] items in description, excluding items that are todos)
+    if prep_lines:
+        filtered_prep = []
+        for line in prep_lines:
+            # Strip checkbox prefix to get the text
+            prep_text = line.removeprefix("[ ] ").removeprefix("[x] ").strip().lower()
+            if not any(prep_text in td or td in prep_text for td in todo_descriptions_lower):
+                filtered_prep.append(line)
+        if filtered_prep:
+            sections.append("🎒 Prep\n" + "\n".join(filtered_prep))
+
+    # Details section (remaining description text)
+    if details_text:
+        sections.append("📝 Details\n" + details_text)
+
+    # Transport section — always show when caregivers exist, even if unassigned
+    if caregiver_map:
         drop_off_name = caregiver_map.get(event.drop_off_by, "unassigned") if event.drop_off_by else "unassigned"
         pick_up_name = caregiver_map.get(event.pick_up_by, "unassigned") if event.pick_up_by else "unassigned"
-        description += (
-            f"\n\n🚗 Transport\n"
+        sections.append(
+            f"🚗 Transport\n"
             f"Drop-off: {drop_off_name}\n"
             f"Pick-up: {pick_up_name}"
         )
 
+    description = "\n\n".join(sections)
     if description:
         body["description"] = description
     if event.location:
@@ -89,6 +153,47 @@ def event_to_gcal_body(
         from src.utils.rrule import rrule_to_gcal
 
         body["recurrence"] = rrule_to_gcal(event.rrule)
+
+    return body
+
+
+def todo_to_gcal_body(
+    todo: Todo,
+    linked_event_title: str | None = None,
+    family_timezone: str = "America/New_York",
+) -> dict:
+    """Convert a Radar Todo model to a Google Calendar API event body.
+
+    Creates an all-day event or timed event on the deadline date.
+    """
+    body: dict = {
+        "summary": todo.description,
+    }
+
+    description_parts = []
+    if linked_event_title:
+        description_parts.append(f"For: {linked_event_title}")
+    description_parts.append(f"Type: {todo.type.value}")
+    body["description"] = "\n".join(description_parts)
+
+    if todo.due_date:
+        # If the due_date has a non-midnight time, use dateTime (timed event)
+        if todo.due_date.hour != 0 or todo.due_date.minute != 0:
+            # Convert from UTC to family timezone so GCal shows the right local time
+            import zoneinfo
+            try:
+                tz = zoneinfo.ZoneInfo(family_timezone)
+                local_dt = todo.due_date.astimezone(tz).replace(tzinfo=None)
+            except (KeyError, ValueError):
+                local_dt = todo.due_date.replace(tzinfo=None)
+            body["start"] = {"dateTime": local_dt.isoformat(), "timeZone": family_timezone}
+            end_dt = local_dt + timedelta(minutes=30)
+            body["end"] = {"dateTime": end_dt.isoformat(), "timeZone": family_timezone}
+        else:
+            # All-day event — date-only is timezone-agnostic
+            date_str = todo.due_date.strftime("%Y-%m-%d")
+            body["start"] = {"date": date_str}
+            body["end"] = {"date": date_str}
 
     return body
 
@@ -167,10 +272,13 @@ async def create_calendar_event(
     """
     from src.agents.calendar import build_caregiver_name_map
 
+    from src.state import todos as todos_dal
+
     caregivers = await families_dal.get_caregivers_for_family(session, family_id)
     caregiver_map = build_caregiver_name_map(caregivers)
+    linked_todos = await todos_dal.get_todos_for_event(session, family_id, event.id, include_completed=True)
     gcal_event_ids: list[str] = []
-    body = event_to_gcal_body(event, caregiver_map=caregiver_map)
+    body = event_to_gcal_body(event, caregiver_map=caregiver_map, linked_todos=linked_todos)
 
     for caregiver in caregivers:
         if caregiver.google_refresh_token_encrypted is None:
@@ -217,9 +325,12 @@ async def update_calendar_event(
     """
     from src.agents.calendar import build_caregiver_name_map
 
+    from src.state import todos as todos_dal
+
     caregivers = await families_dal.get_caregivers_for_family(session, family_id)
     caregiver_map = build_caregiver_name_map(caregivers)
-    body = event_to_gcal_body(event, caregiver_map=caregiver_map)
+    linked_todos = await todos_dal.get_todos_for_event(session, family_id, event.id, include_completed=True)
+    body = event_to_gcal_body(event, caregiver_map=caregiver_map, linked_todos=linked_todos)
     gcal_ids = _strip_gcal_refs(event.source_refs or [])
 
     for caregiver in caregivers:

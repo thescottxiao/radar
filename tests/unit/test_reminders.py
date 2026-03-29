@@ -15,14 +15,13 @@ from src.agents.reminders import (
     generate_weekly_summary,
 )
 from src.state.models import (
-    ActionItem,
-    ActionItemStatus,
-    ActionItemType,
     Event,
     EventSource,
-
     FamilyLearning,
     RsvpStatus,
+    Todo,
+    TodoStatus,
+    TodoType,
 )
 
 
@@ -70,15 +69,17 @@ def _make_event(
     return event
 
 
-def _make_action_item(family_id, description="Sign permission slip", hours_until_due=24):
+def _make_todo(family_id, description="Sign permission slip", hours_until_due=24):
     now = datetime.now(UTC)
-    item = MagicMock(spec=ActionItem)
+    item = MagicMock(spec=Todo)
     item.id = uuid4()
     item.family_id = family_id
     item.description = description
     item.due_date = now + timedelta(hours=hours_until_due)
-    item.status = ActionItemStatus.pending
-    item.type = ActionItemType.form_to_sign
+    item.status = TodoStatus.pending
+    item.type = TodoType.form_to_sign
+    item.reminder_days_before = 2
+    item.reminder_sent_at = None
     return item
 
 
@@ -94,16 +95,17 @@ def _make_learning(family_id, fact="Emma prefers the blue soccer jersey"):
 
 class TestDailyDigest:
     @patch("src.agents.reminders.generate")
+    @patch("src.agents.reminders.todos_dal")
     @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.event_dal")
     async def test_generates_digest_with_events(
-        self, mock_event_dal, mock_families_dal, mock_generate, mock_session, family_id
+        self, mock_event_dal, mock_families_dal, mock_todos_dal, mock_generate, mock_session, family_id
     ):
         """Daily digest generates content when there are today's events."""
         events = [_make_event(family_id, "Soccer Practice", hours_from_now=4)]
 
         mock_event_dal.get_events_in_range = AsyncMock(side_effect=[events, events])
-        mock_event_dal.get_action_items_due_soon = AsyncMock(return_value=[])
+        mock_todos_dal.get_todos_due_soon = AsyncMock(return_value=[])
         mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
         mock_generate.return_value = "Good morning! Here's your day:\n- 11:00 AM: Soccer Practice at Westfield Park"
@@ -114,46 +116,49 @@ class TestDailyDigest:
         assert "Soccer Practice" in result
         mock_generate.assert_called_once()
 
+    @patch("src.agents.reminders.todos_dal")
     @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.event_dal")
     async def test_returns_none_when_nothing_actionable(
-        self, mock_event_dal, mock_families_dal, mock_session, family_id
+        self, mock_event_dal, mock_families_dal, mock_todos_dal, mock_session, family_id
     ):
-        """Daily digest returns None when there are no events, deadlines, or transport needs."""
+        """Daily digest returns None when there are no events, todos, or transport needs."""
         mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_event_dal.get_events_in_range = AsyncMock(return_value=[])
-        mock_event_dal.get_action_items_due_soon = AsyncMock(return_value=[])
+        mock_todos_dal.get_todos_due_soon = AsyncMock(return_value=[])
 
         result = await generate_daily_digest(mock_session, family_id)
 
         assert result is None
 
     @patch("src.agents.reminders.generate")
+    @patch("src.agents.reminders.todos_dal")
     @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.event_dal")
-    async def test_includes_deadlines(
-        self, mock_event_dal, mock_families_dal, mock_generate, mock_session, family_id
+    async def test_includes_todos(
+        self, mock_event_dal, mock_families_dal, mock_todos_dal, mock_generate, mock_session, family_id
     ):
-        """Daily digest includes approaching action item deadlines."""
-        items = [_make_action_item(family_id, "Sign field trip permission slip")]
+        """Daily digest includes approaching todo deadlines."""
+        items = [_make_todo(family_id, "Sign field trip permission slip")]
 
         mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_event_dal.get_events_in_range = AsyncMock(return_value=[])
-        mock_event_dal.get_action_items_due_soon = AsyncMock(return_value=items)
+        mock_todos_dal.get_todos_due_soon = AsyncMock(return_value=items)
         mock_generate.return_value = "Heads up! Due soon:\n- Sign field trip permission slip"
 
         result = await generate_daily_digest(mock_session, family_id)
 
         assert result is not None
-        # Verify LLM was called with deadline info
+        # Verify LLM was called with todo info
         call_args = mock_generate.call_args
         assert "permission slip" in call_args.kwargs.get("prompt", call_args.args[0] if call_args.args else "")
 
     @patch("src.agents.reminders.generate")
+    @patch("src.agents.reminders.todos_dal")
     @patch("src.agents.reminders.families_dal")
     @patch("src.agents.reminders.event_dal")
     async def test_includes_unclaimed_transport(
-        self, mock_event_dal, mock_families_dal, mock_generate, mock_session, family_id
+        self, mock_event_dal, mock_families_dal, mock_todos_dal, mock_generate, mock_session, family_id
     ):
         """Daily digest flags events with no transport assigned."""
         event = _make_event(
@@ -162,7 +167,7 @@ class TestDailyDigest:
         )
 
         mock_event_dal.get_events_in_range = AsyncMock(side_effect=[[], [event]])
-        mock_event_dal.get_action_items_due_soon = AsyncMock(return_value=[])
+        mock_todos_dal.get_todos_due_soon = AsyncMock(return_value=[])
         mock_families_dal.get_family = AsyncMock(return_value=_make_family(family_id))
         mock_families_dal.get_caregivers_for_family = AsyncMock(return_value=[])
         mock_generate.return_value = "Transport needed:\n- Piano Lesson: needs drop-off and pick-up"
@@ -255,8 +260,9 @@ class TestWeeklySummary:
 
 
 class TestImmediateTriggers:
+    @patch("src.agents.reminders.todos_dal")
     @patch("src.agents.reminders.event_dal")
-    async def test_rsvp_deadline_trigger(self, mock_event_dal, mock_session, family_id):
+    async def test_rsvp_deadline_trigger(self, mock_event_dal, mock_todos_dal, mock_session, family_id):
         """Triggers notification when RSVP deadline is within 48h."""
         rsvp_event = _make_event(
             family_id,
@@ -268,6 +274,7 @@ class TestImmediateTriggers:
 
         mock_event_dal.get_events_needing_rsvp = AsyncMock(return_value=[rsvp_event])
         mock_event_dal.get_events_in_range = AsyncMock(return_value=[])
+        mock_todos_dal.get_todos_needing_reminder = AsyncMock(return_value=[])
 
         messages = await check_immediate_triggers(mock_session, family_id)
 
@@ -275,8 +282,9 @@ class TestImmediateTriggers:
         assert "Birthday Party" in messages[0]
         assert "RSVP" in messages[0]
 
+    @patch("src.agents.reminders.todos_dal")
     @patch("src.agents.reminders.event_dal")
-    async def test_unclaimed_transport_trigger(self, mock_event_dal, mock_session, family_id):
+    async def test_unclaimed_transport_trigger(self, mock_event_dal, mock_todos_dal, mock_session, family_id):
         """Triggers notification for unclaimed transport within 48h."""
         event = _make_event(
             family_id, "Soccer Game", hours_from_now=20,
@@ -285,6 +293,7 @@ class TestImmediateTriggers:
 
         mock_event_dal.get_events_needing_rsvp = AsyncMock(return_value=[])
         mock_event_dal.get_events_in_range = AsyncMock(return_value=[event])
+        mock_todos_dal.get_todos_needing_reminder = AsyncMock(return_value=[])
 
         messages = await check_immediate_triggers(mock_session, family_id)
 
@@ -292,9 +301,22 @@ class TestImmediateTriggers:
         assert "drop-off" in messages[0]
         assert "Soccer Game" in messages[0]
 
+    @patch("src.agents.reminders.todos_dal")
     @patch("src.agents.reminders.event_dal")
-    async def test_no_triggers_when_nothing_urgent(self, mock_event_dal, mock_session, family_id):
+    async def test_no_triggers_when_nothing_urgent(self, mock_event_dal, mock_todos_dal, mock_session, family_id):
         """Returns empty list when nothing is urgent."""
+        mock_event_dal.get_events_needing_rsvp = AsyncMock(return_value=[])
+        mock_event_dal.get_events_in_range = AsyncMock(return_value=[])
+        mock_todos_dal.get_todos_needing_reminder = AsyncMock(return_value=[])
+
+        messages = await check_immediate_triggers(mock_session, family_id)
+
+        assert messages == []
+
+    @patch("src.agents.reminders.event_dal")
+    async def test_todo_nudges_handled_separately(self, mock_event_dal, mock_session, family_id):
+        """Todo deadline nudges are NOT included in immediate triggers
+        (they're handled by send_todo_deadline_nudges to avoid double-sending)."""
         mock_event_dal.get_events_needing_rsvp = AsyncMock(return_value=[])
         mock_event_dal.get_events_in_range = AsyncMock(return_value=[])
 

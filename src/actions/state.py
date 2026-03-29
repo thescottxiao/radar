@@ -1,6 +1,6 @@
 """State update actions — persist extraction results into the database.
 
-Handles event dedup, action item creation, and learning creation.
+Handles event dedup, todo creation, and learning creation.
 Below 0.6 confidence: flags items for caregiver confirmation.
 """
 
@@ -14,11 +14,13 @@ from src.extraction.email import ExtractionResult
 from src.state import children as children_dal
 from src.state import events as event_dal
 from src.state import learning as learning_dal
+from src.state import todos as todos_dal
 from src.state.models import (
-    ActionItemType,
     Event,
     EventSource,
+    TodoType,
 )
+from src.state.todos import get_reminder_days
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +28,15 @@ logger = logging.getLogger(__name__)
 CONFIDENCE_THRESHOLD = 0.6
 
 # Mapping from extraction string types to model enums
-_ACTION_TYPE_MAP = {
-    "form_to_sign": ActionItemType.form_to_sign,
-    "payment_due": ActionItemType.payment_due,
-    "item_to_bring": ActionItemType.item_to_bring,
-    "item_to_purchase": ActionItemType.item_to_purchase,
-    "registration_deadline": ActionItemType.registration_deadline,
-    "rsvp_needed": ActionItemType.rsvp_needed,
-    "contact_needed": ActionItemType.contact_needed,
-    "other": ActionItemType.other,
+TODO_TYPE_MAP = {
+    "form_to_sign": TodoType.form_to_sign,
+    "payment_due": TodoType.payment_due,
+    "item_to_bring": TodoType.item_to_bring,
+    "item_to_purchase": TodoType.item_to_purchase,
+    "registration_deadline": TodoType.registration_deadline,
+    "rsvp_needed": TodoType.rsvp_needed,
+    "contact_needed": TodoType.contact_needed,
+    "other": TodoType.other,
 }
 
 # Map source strings to EventSource enum
@@ -54,11 +56,12 @@ async def persist_extraction(
     source: str = "email",
     source_ref: str | None = None,
     skip_events: bool = False,
+    skip_todos: bool = False,
 ) -> list[Event]:
-    """Persist extraction results: dedup events, create action items and learnings.
+    """Persist extraction results: dedup events, create todos and learnings.
 
     For each extracted event: dedup check, then create or merge.
-    For action items: create with status pending.
+    For todos: create with status pending and set reminder lead time.
     For learnings: create as unconfirmed.
     Below 0.6 confidence: flag for caregiver confirmation.
 
@@ -110,33 +113,40 @@ async def persist_extraction(
 
         persisted_events.append(event)
 
-    # ── Action Items ────────────────────────────────────────────────
-    for extracted_item in result.action_items:
-        action_type = _ACTION_TYPE_MAP.get(extracted_item.action_type, ActionItemType.other)
+    # ── Todos ────────────────────────────────────────────────────────
+    if skip_todos:
+        logger.info("Skipping todo persistence (todos handled via button confirmation)")
+    for extracted_todo in ([] if skip_todos else result.todos):
+        todo_type = TODO_TYPE_MAP.get(extracted_todo.action_type, TodoType.other)
 
-        # Find the associated event if action item matches one
+        # Find the associated event if todo matches one
         linked_event_id = None
         if persisted_events:
             # Simple heuristic: link to first event if only one, otherwise leave unlinked
             if len(persisted_events) == 1:
                 linked_event_id = persisted_events[0].id
 
-        await event_dal.create_action_item(
+        reminder_days = get_reminder_days(
+            todo_type, extracted_todo.suggested_reminder_days
+        )
+
+        await todos_dal.create_todo(
             session,
             family_id,
             source=event_source,
             source_ref=source_ref,
-            type=action_type,
-            description=extracted_item.description,
-            due_date=extracted_item.due_date,
+            type=todo_type,
+            description=extracted_todo.description,
+            due_date=extracted_todo.due_date,
             event_id=linked_event_id,
+            reminder_days_before=reminder_days,
         )
 
-        if extracted_item.confidence < CONFIDENCE_THRESHOLD:
+        if extracted_todo.confidence < CONFIDENCE_THRESHOLD:
             logger.info(
-                "Low confidence action item (%.2f): '%s' — flagged for confirmation",
-                extracted_item.confidence,
-                extracted_item.description[:60],
+                "Low confidence todo (%.2f): '%s' — flagged for confirmation",
+                extracted_todo.confidence,
+                extracted_todo.description[:60],
             )
 
     # ── Learnings ───────────────────────────────────────────────────

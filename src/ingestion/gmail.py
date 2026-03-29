@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from email.utils import parseaddr
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.actions.state import persist_extraction
@@ -23,7 +24,7 @@ from src.extraction.email import process_email
 from src.ingestion.ics import is_ics_file
 from src.ingestion.schemas import EmailAttachment, EmailContent
 from src.state import families as families_dal
-from src.state.models import PendingActionType
+from src.state.models import PendingAction, PendingActionType
 from src.state.pending import create_pending_action
 from src.utils.button_ids import encode_button_id
 
@@ -95,14 +96,33 @@ async def handle_gmail_notification(
         caregiver.gmail_watch_history_id = int(history_id)
         await session.flush()
 
+    # Deduplicate message IDs (Pub/Sub at-least-once delivery)
+    message_ids = list(dict.fromkeys(message_ids))
+
     # Process each new message
     for msg_id in message_ids:
         try:
+            # Skip if we already created pending actions for this message
+            existing = await session.execute(
+                select(PendingAction.id).where(
+                    PendingAction.family_id == caregiver.family_id,
+                    PendingAction.context["source_ref"].as_string() == msg_id,
+                ).limit(1)
+            )
+            if existing.scalar_one_or_none():
+                logger.info("Gmail message %s already processed, skipping", msg_id)
+                continue
+
             email_content = await fetch_email_content(access_token, msg_id)
             if email_content is None:
                 continue
 
             email = EmailContent(**email_content)
+
+            # Skip outbound emails — only process emails received by the caregiver
+            if email.from_address and email.from_address.lower() == (caregiver.google_account_email or "").lower():
+                logger.debug("Skipping outbound email %s (sent by caregiver)", msg_id)
+                continue
 
             # Process ICS attachments before normal email extraction
             if email.attachments:
@@ -119,7 +139,7 @@ async def handle_gmail_notification(
             )
 
             if result.is_relevant:
-                # Persist action items and learnings (events go through button confirmation)
+                # Persist learnings only (events and todos go through button confirmation)
                 await persist_extraction(
                     session,
                     caregiver.family_id,
@@ -127,9 +147,44 @@ async def handle_gmail_notification(
                     source="email",
                     source_ref=msg_id,
                     skip_events=True,
+                    skip_todos=True,
                 )
 
-                # Send button confirmation for each extracted event
+                # Send button confirmation for standalone todos
+                # (event-linked tasks are in event.tasks and flow with the event)
+                for todo in result.todos:
+                    pending = await create_pending_action(
+                        session,
+                        family_id=caregiver.family_id,
+                        action_type=PendingActionType.todo_confirmation,
+                        draft_content=f"{todo.description}",
+                        context={
+                            "todo_data": todo.model_dump(mode="json"),
+                            "email_subject": email.subject,
+                            "source_ref": msg_id,
+                        },
+                    )
+
+                    due_str = f"\nDue: {todo.due_date.strftime('%b %d, %I:%M %p')}" if todo.due_date else ""
+                    if todo.due_date:
+                        body = f"📋 New todo from email:\n*{todo.description}*{due_str}\n\nAdd this?"
+                    else:
+                        body = (
+                            f"📋 New todo from email:\n*{todo.description}*\n\n"
+                            "When do you need to do this by? Reply with a date, or tap Yes to add without a deadline."
+                        )
+
+                    buttons = [
+                        {"id": encode_button_id("todo_confirm", str(pending.id), "yes"), "title": "Yes, add it"},
+                        {"id": encode_button_id("todo_confirm", str(pending.id), "no"), "title": "No, skip"},
+                    ]
+
+                    try:
+                        await send_buttons_to_family(session, caregiver.family_id, body, buttons)
+                    except Exception:
+                        logger.exception("Failed to send button message for todo '%s'", todo.description[:50])
+
+                # Send button confirmation for each event (tasks are bundled in event_data)
                 for ev in result.events:
                     if ev.datetime_start is None:
                         logger.warning("Skipping event '%s' — no datetime_start", ev.title)
@@ -168,7 +223,7 @@ async def handle_gmail_notification(
                     msg_id,
                     caregiver.family_id,
                     len(result.events),
-                    len(result.action_items),
+                    len(result.todos),
                 )
         except Exception:
             logger.exception("Error processing Gmail message %s", msg_id)

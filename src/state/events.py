@@ -6,8 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.state.models import (
-    ActionItem,
-    ActionItemStatus,
     Event,
     EventChild,
     RsvpStatus,
@@ -169,48 +167,5 @@ async def get_events_by_source_ref(
             Event.family_id == family_id,
             Event.source_refs.any(source_ref),
         ).options(selectinload(Event.children))
-    )
-    return list(result.scalars().all())
-
-
-# ── Action items ────────────────────────────────────────────────────────
-
-
-async def create_action_item(session: AsyncSession, family_id: UUID, **kwargs) -> ActionItem:
-    item = ActionItem(family_id=family_id, **kwargs)
-    session.add(item)
-    await session.flush()
-    return item
-
-
-async def get_pending_action_items(
-    session: AsyncSession, family_id: UUID
-) -> list[ActionItem]:
-    result = await session.execute(
-        select(ActionItem).where(
-            ActionItem.family_id == family_id,
-            ActionItem.status == ActionItemStatus.pending,
-        ).order_by(ActionItem.due_date.asc().nullslast())
-    )
-    return list(result.scalars().all())
-
-
-async def get_action_items_due_soon(
-    session: AsyncSession, family_id: UUID, within_hours: int = 48,
-    family_timezone: str | None = None,
-) -> list[ActionItem]:
-    if family_timezone:
-        from src.utils.timezone import get_family_now
-        now = get_family_now(family_timezone)
-    else:
-        now = datetime.now(UTC)
-    cutoff = now + timedelta(hours=within_hours)
-    result = await session.execute(
-        select(ActionItem).where(
-            ActionItem.family_id == family_id,
-            ActionItem.status == ActionItemStatus.pending,
-            ActionItem.due_date.is_not(None),
-            ActionItem.due_date <= cutoff,
-        ).order_by(ActionItem.due_date)
     )
     return list(result.scalars().all())

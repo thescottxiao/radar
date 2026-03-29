@@ -227,41 +227,53 @@ CREATE INDEX idx_prep_tasks_event ON prep_tasks(event_id);
 CREATE INDEX idx_prep_tasks_family ON prep_tasks(family_id);
 
 -- ============================================================
--- Action items (non-event actionables from emails)
+-- Todos (tasks with their own deadline/lifecycle)
 -- ============================================================
+-- Todos are distinct from events: they represent actionable tasks with deadlines
+-- (e.g., "RSVP by Friday", "buy gift for party", "order school lunch").
+-- They can be standalone or linked to events. Synced to GCal at deadline date.
+--
+-- Distinction from prep_tasks: Todos require effort/time before the event
+-- (buy gift, RSVP, order costume). Prep tasks are "have this when you leave"
+-- (bring shin guards, wear costume).
 
-CREATE TYPE action_item_type AS ENUM (
+CREATE TYPE todo_type AS ENUM (
     'form_to_sign', 'payment_due', 'item_to_bring', 'item_to_purchase',
     'registration_deadline', 'rsvp_needed', 'contact_needed', 'other'
 );
 
-CREATE TYPE action_item_status AS ENUM ('pending', 'complete', 'dismissed');
+CREATE TYPE todo_status AS ENUM ('pending', 'complete', 'dismissed');
 
-CREATE TABLE action_items (
+CREATE TABLE todos (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
     event_id        UUID REFERENCES events(id) ON DELETE SET NULL,
     source          event_source NOT NULL,
     source_ref      TEXT,
-    type            action_item_type NOT NULL DEFAULT 'other',
+    type            todo_type NOT NULL DEFAULT 'other',
     description     TEXT NOT NULL,
     due_date        TIMESTAMPTZ,
-    status          action_item_status NOT NULL DEFAULT 'pending',
+    status          todo_status NOT NULL DEFAULT 'pending',
     assigned_to     UUID REFERENCES caregivers(id),
+    gcal_event_id   TEXT,           -- GCal calendar entry ID for the deadline reminder
+    reminder_days_before INTEGER,   -- days before deadline to send nudge (from type default or LLM)
+    reminder_sent_at TIMESTAMPTZ,   -- NULL = not yet sent; set when standalone nudge fires
+    confirmed_by_caregiver BOOLEAN NOT NULL DEFAULT FALSE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at    TIMESTAMPTZ
 );
 
-CREATE INDEX idx_action_items_family ON action_items(family_id);
-CREATE INDEX idx_action_items_status ON action_items(family_id, status);
-CREATE INDEX idx_action_items_due ON action_items(family_id, due_date);
+CREATE INDEX idx_todos_family ON todos(family_id);
+CREATE INDEX idx_todos_status ON todos(family_id, status);
+CREATE INDEX idx_todos_due ON todos(family_id, due_date);
+CREATE INDEX idx_todos_event ON todos(event_id) WHERE event_id IS NOT NULL;
 
--- Junction table: action_items <-> children
-CREATE TABLE action_item_children (
-    action_item_id  UUID NOT NULL REFERENCES action_items(id) ON DELETE CASCADE,
+-- Junction table: todos <-> children
+CREATE TABLE todo_children (
+    todo_id         UUID NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
     child_id        UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
     family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
-    PRIMARY KEY (action_item_id, child_id)
+    PRIMARY KEY (todo_id, child_id)
 );
 
 -- ============================================================
@@ -340,7 +352,8 @@ CREATE INDEX idx_ics_family ON ics_subscriptions(family_id);
 
 CREATE TYPE pending_action_type AS ENUM (
     'rsvp_email', 'playdate_message', 'coach_email', 'gift_selection',
-    'camp_registration', 'general_approval', 'event_confirmation'
+    'camp_registration', 'general_approval', 'event_confirmation',
+    'todo_confirmation'
 );
 
 CREATE TYPE pending_action_status AS ENUM (
@@ -413,6 +426,7 @@ CREATE TABLE gcal_outbox (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     family_id       UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
     event_id        UUID REFERENCES events(id) ON DELETE SET NULL,
+    todo_id         UUID REFERENCES todos(id) ON DELETE SET NULL,
     operation       TEXT NOT NULL CHECK (operation IN ('create', 'update', 'patch', 'delete')),
     payload         JSONB NOT NULL,
     gcal_event_id   TEXT,           -- for update/patch/delete; NULL for create
@@ -446,8 +460,8 @@ ALTER TABLE sent_emails ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE event_children ENABLE ROW LEVEL SECURITY;
 ALTER TABLE prep_tasks ENABLE ROW LEVEL SECURITY;
-ALTER TABLE action_items ENABLE ROW LEVEL SECURITY;
-ALTER TABLE action_item_children ENABLE ROW LEVEL SECURITY;
+ALTER TABLE todos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE todo_children ENABLE ROW LEVEL SECURITY;
 ALTER TABLE family_learnings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversation_memory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ics_subscriptions ENABLE ROW LEVEL SECURITY;
@@ -486,10 +500,10 @@ CREATE POLICY tenant_isolation_event_children ON event_children
 CREATE POLICY tenant_isolation_prep_tasks ON prep_tasks
     USING (family_id = current_setting('app.current_family_id')::UUID);
 
-CREATE POLICY tenant_isolation_action_items ON action_items
+CREATE POLICY tenant_isolation_todos ON todos
     USING (family_id = current_setting('app.current_family_id')::UUID);
 
-CREATE POLICY tenant_isolation_action_item_children ON action_item_children
+CREATE POLICY tenant_isolation_todo_children ON todo_children
     USING (family_id = current_setting('app.current_family_id')::UUID);
 
 CREATE POLICY tenant_isolation_learnings ON family_learnings

@@ -7,8 +7,8 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.actions.state import TODO_TYPE_MAP
 from src.extraction.schemas import IntentResult, IntentType
-from src.state.models import GcalOutboxOperation
 from src.llm import HAIKU_MODEL, SONNET_MODEL, classify, extract, generate
 from src.state import children as children_dal
 from src.state import events as events_dal
@@ -16,7 +16,7 @@ from src.state import learning as learning_dal
 from src.state import memory as memory_dal
 from src.state import pending as pending_dal
 from src.state import preferences as pref_dal
-from src.state.models import PendingActionStatus, PendingActionType
+from src.state.models import EventSource, GcalOutboxOperation, PendingActionStatus, PendingActionType, TodoType
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,9 @@ Intent categories:
 - event_update: Updating an event already on the calendar — marking tasks done, adding notes (e.g. "I bought the wedding gift")
 - set_preference: Caregiver is stating a preference or rule for how Radar should behave (e.g. "Don't message me before 7am", "Keep messages short", "I handle school stuff", "No activities on Sundays", "Budget for gifts is $30")
 - correct_learning: Correcting a fact or preference Radar learned (e.g. "Actually Emma goes to Washington Elementary", "Her birthday is March 28 not 27", "Change the gift budget to $40")
+- add_todo: User wants to create a standalone todo/task/reminder with a deadline (e.g. "Remind me to RSVP by Friday", "I need to order school lunch by Thursday", "Add a todo to sign the permission slip"). This is for tasks that require effort/time, NOT for calendar events with a physical location and start time.
+- complete_todo: User is marking a todo as done (e.g. "Done with the RSVP", "I signed the permission slip", "Mark the lunch order as complete")
+- list_todos: User wants to see their current todos/tasks (e.g. "What are my todos?", "Show my tasks", "What do I need to do?")
 - general_question: General question about the assistant or non-schedule topic
 - greeting: Greeting or small talk
 - unknown: Cannot determine intent
@@ -50,6 +53,7 @@ Rules:
 5. set_preference is for general behavior preferences, NOT for event-specific changes. "Move soccer to 3pm" is modify_event, not set_preference.
 6. correct_learning requires the word "actually" or a clear correction pattern ("not X, it's Y"). Simple new information is share_info, not correct_learning.
 7. When a message mentions an event with a day/time (e.g., "We've got soccer practice Monday morning"), default to add_event. Only classify as modify_event if the message explicitly says to CHANGE, MOVE, RESCHEDULE, or UPDATE an existing event. A similar event title on the calendar does not make it modify_event — recurring activities often have multiple instances.
+8. add_todo is for tasks with deadlines that require effort/time (RSVP, buy something, sign a form). If it has a specific physical location + start time, use add_event instead. "Remind me to..." is typically add_todo.
 
 Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0, "extracted_params": {...}}
 """
@@ -386,6 +390,9 @@ async def route_intent(
         IntentType.event_update: _handle_event_update,
         IntentType.set_preference: _handle_set_preference,
         IntentType.correct_learning: _handle_correct_learning,
+        IntentType.add_todo: _handle_add_todo,
+        IntentType.complete_todo: _handle_complete_todo,
+        IntentType.list_todos: _handle_list_todos,
         IntentType.general_question: _handle_general_question,
         IntentType.greeting: _handle_greeting,
         IntentType.unknown: _handle_unknown,
@@ -603,17 +610,17 @@ Location: {location or "TBD"}{child_context}
 
 Generate a short event description with a prep checklist.
 Rules:
-- Use "☐" prefix for each prep task
+- Use "[ ]" prefix for each prep task
 - Include ONLY tasks specific to this event type (3-5 items max)
-- For child activities (sports, lessons, camps, school events, playdates), include "☐ Arrange drop-off/pick-up"
+- For child activities (sports, lessons, camps, school events, playdates), include "[ ] Arrange drop-off/pick-up"
 - Do NOT include generic filler like "confirm details", "check parking", "plan outfit", "check weather"
 - If nothing specific is needed, return just the event type as a one-line description
 
 Example for a kids' soccer practice:
 Soccer practice
 
-☐ Pack soccer bag (cleats, shin guards, water bottle)
-☐ Arrange drop-off/pick-up"""
+[ ] Pack soccer bag (cleats, shin guards, water bottle)
+[ ] Arrange drop-off/pick-up"""
 
     try:
         result = await generate(
@@ -962,7 +969,7 @@ async def _handle_add_event(
 
     # Show prep items from description
     if event.description:
-        prep_lines = [line.strip() for line in event.description.split("\n") if line.strip().startswith("☐")]
+        prep_lines = [line.strip() for line in event.description.split("\n") if line.strip().startswith(("[ ]", "[x]", "☐", "☑"))]
         if prep_lines:
             parts.append("")
             parts.append("*Prep:*")
@@ -1567,8 +1574,11 @@ Upcoming calendar events:
             return body
 
         # Non-recurring event: cancel directly
-        await _cancel_single_event(session, family_id, local_ev, gcal_id, matched_event)
-        return data.get("confirmation_message", f"Cancelled *{matched_event}* ✓")
+        n_todos = await _cancel_single_event(session, family_id, local_ev, gcal_id, matched_event)
+        msg = data.get("confirmation_message", f"Cancelled *{matched_event}* ✓")
+        if n_todos:
+            msg += f" (and {n_todos} linked todo{'s' if n_todos > 1 else ''})"
+        return msg
 
     except json.JSONDecodeError:
         logger.warning("Could not parse cancel LLM response: %s", raw[:200] if raw else "empty")
@@ -1587,8 +1597,11 @@ async def _cancel_single_event(
     local_ev: "Event | None",
     gcal_id: str | None,
     matched_event: str,
-) -> None:
-    """Cancel a single (non-recurring) event: cancel outbox items, enqueue GCal delete, soft-delete locally."""
+) -> int:
+    """Cancel a single (non-recurring) event: cancel outbox items, enqueue GCal delete, soft-delete locally.
+
+    Returns the number of linked todos that were also cancelled.
+    """
     from src.state import outbox as outbox_dal
 
     if local_ev:
@@ -1619,6 +1632,27 @@ async def _cancel_single_event(
             logger.info("Soft-deleted local event '%s'", local_ev.title)
         except Exception:
             logger.debug("Could not soft-delete local event '%s'", matched_event)
+
+        # Cascade cancel linked todos
+        try:
+            from src.state import todos as todos_dal
+            linked_todos = await todos_dal.get_todos_for_event(session, family_id, local_ev.id)
+            for todo in linked_todos:
+                await todos_dal.complete_todo(session, family_id, todo.id)
+                if todo.gcal_event_id:
+                    await outbox_dal.enqueue_gcal_write(
+                        session, family_id, event_id=None,
+                        operation=GcalOutboxOperation.delete, payload={},
+                        idempotency_key=f"delete:todo:{todo.id}:{uuid4().hex[:12]}",
+                        gcal_event_id=todo.gcal_event_id,
+                    )
+            if linked_todos:
+                logger.info("Cancelled %d linked todo(s) for event '%s'", len(linked_todos), matched_event)
+            return len(linked_todos)
+        except Exception:
+            logger.debug("Could not cancel linked todos for event '%s'", matched_event, exc_info=True)
+
+    return 0
 
 
 async def _handle_cancel_scope(
@@ -2076,6 +2110,8 @@ async def _handle_approval_response(
                     session, family_id, pending_action, message,
                 )
             response = await _create_event_from_pending(session, family_id, pending_action)
+        elif pending_action and pending_action.type == PendingActionType.todo_confirmation:
+            response = await _create_todo_from_pending(session, family_id, pending_action)
         else:
             response = "Approved! I'll take care of it."
 
@@ -2096,11 +2132,11 @@ async def _handle_approval_response(
             status=PendingActionStatus.dismissed,
             resolved_by=sender_id,
         )
-        # Check if this was an event confirmation for a friendlier message
+        # Check if this was an event or todo confirmation for a friendlier message
         pending_action = await pending_dal.get_pending_action(
             session, family_id, pending_action_id
         )
-        if pending_action and pending_action.type.value == "event_confirmation":
+        if pending_action and pending_action.type in (PendingActionType.event_confirmation, PendingActionType.todo_confirmation):
             return "Got it, skipped."
         return "No problem, I've dismissed that."
 
@@ -2198,9 +2234,29 @@ async def _create_event_from_pending(
         event_title=title, event_type=event_data.get("event_type"),
     )
 
-    # Generate description with prep checklist if not already present
     dt_str = datetime_start.strftime("%a %b %d, %I:%M %p")
-    if not event.description:
+
+    # Split event tasks by category (new unified extraction format)
+    event_tasks = event_data.get("tasks", [])
+    todo_tasks = [t for t in event_tasks if t.get("category") == "todo"]
+    prep_tasks = [t for t in event_tasks if t.get("category", "prep") == "prep"]
+    has_structured_tasks = "tasks" in event_data
+
+    # Assemble event.description:
+    # - New format: prep [ ] lines + clean description text from structured tasks
+    # - Old format (no tasks key): description already has [ ] lines from LLM
+    if has_structured_tasks:
+        desc_parts = []
+        if prep_tasks:
+            desc_parts.append("\n".join(f"[ ] {t['description']}" for t in prep_tasks))
+        clean_desc = event_data.get("description", "")
+        if clean_desc:
+            desc_parts.append(clean_desc)
+        if desc_parts:
+            event.description = "\n\n".join(desc_parts)
+            await session.flush()
+    elif not event.description:
+        # No structured tasks and no description — generate one via LLM
         child_names = child_names_from_data or event_data.get("child_names", [])
         desc = await _generate_event_description(
             title=title,
@@ -2214,32 +2270,100 @@ async def _create_event_from_pending(
             event.description = desc
             await session.flush()
 
-    # Enqueue GCal create via outbox (async, with retry)
-    try:
-        from src.actions.gcal import event_to_gcal_body
-        from src.state import outbox as outbox_dal
+    # Resolve event source for todos
+    source_str = pending_action.context.get("source", "email")
+    _source_map = {"email": EventSource.email, "forwarded": EventSource.forwarded, "manual": EventSource.manual}
+    todo_source = _source_map.get(source_str, EventSource.email)
 
-        payload = event_to_gcal_body(event)
+    # Create DB Todo records for todo-category tasks
+    if todo_tasks:
+        from datetime import timedelta
+        from src.actions.state import resolve_child_names
+        from src.state import todos as todos_dal
+        from src.state.todos import get_reminder_days
+
+        for td in todo_tasks:
+            todo_type = TODO_TYPE_MAP.get(td.get("action_type", "other"), TodoType.other)
+            due_date = None
+            if td.get("due_date"):
+                due_date = dt.fromisoformat(td["due_date"]) if isinstance(td["due_date"], str) else td["due_date"]
+            reminder_days = get_reminder_days(todo_type, td.get("suggested_reminder_days"))
+
+            todo = await todos_dal.create_todo(
+                session, family_id,
+                source=todo_source,
+                source_ref=pending_action.context.get("source_ref"),
+                type=todo_type,
+                description=td.get("description", ""),
+                due_date=due_date,
+                event_id=event.id,
+                reminder_days_before=reminder_days,
+                confirmed_by_caregiver=True,
+            )
+
+            todo_child_names = td.get("child_names", [])
+            if todo_child_names:
+                children = await children_dal.get_children_for_family(session, family_id)
+                child_name_map = {c.name.lower(): c.id for c in children}
+                child_ids = resolve_child_names(todo_child_names, child_name_map)
+                if child_ids:
+                    await todos_dal.link_children_to_todo(session, family_id, todo.id, child_ids)
+
+    # Enqueue GCal create — outbox processor rebuilds the body from current DB state,
+    # so todos and description are already committed when it runs.
+    try:
+        from src.state import outbox as outbox_dal
         await outbox_dal.enqueue_gcal_write(
-            session, family_id, event.id, GcalOutboxOperation.create, payload,
+            session, family_id, event.id, GcalOutboxOperation.create, {},
             idempotency_key=f"create:{event.id}",
         )
     except Exception:
         logger.exception("Failed to enqueue GCal create for '%s'", title)
 
+    # Build WhatsApp response
     parts = [f"✅ Added to your calendar: *{title}*", f"{dt_str}"]
     if event_data.get("location"):
         parts.append(f"📍 {event_data['location']}")
 
-    # Show prep items from description
-    if event.description:
-        prep_lines = [line.strip() for line in event.description.split("\n") if line.strip().startswith("☐")]
+    # Todos section
+    if todo_tasks:
+        from datetime import timedelta
+        from src.state.todos import get_reminder_days
+
+        parts.append("")
+        parts.append("*Todos:*")
+        for td in todo_tasks:
+            todo_type = TODO_TYPE_MAP.get(td.get("action_type", "other"), TodoType.other)
+            due_date = None
+            if td.get("due_date"):
+                due_date = dt.fromisoformat(td["due_date"]) if isinstance(td["due_date"], str) else td["due_date"]
+            reminder_days = get_reminder_days(todo_type, td.get("suggested_reminder_days"))
+            due_str = f" (due {due_date.strftime('%b %d')})" if due_date else ""
+            reminder_str = ""
+            anchor_date = due_date or datetime_start
+            if anchor_date and reminder_days:
+                reminder_date = anchor_date - timedelta(days=reminder_days)
+                reminder_str = f" — I'll remind you on {reminder_date.strftime('%b %d')}"
+            parts.append(f"[ ] {td['description']}{due_str}{reminder_str}")
+
+    # Prep section
+    if prep_tasks:
+        parts.append("")
+        parts.append("*Prep:*")
+        for t in prep_tasks:
+            parts.append(f"[ ] {t['description']}")
+    elif not has_structured_tasks and event.description:
+        # Backward compat: old pending actions have [ ] lines baked into description
+        prep_lines = [
+            line.strip() for line in event.description.split("\n")
+            if line.strip().startswith(("[ ]", "[x]", "☐", "☑"))
+        ]
         if prep_lines:
             parts.append("")
             parts.append("*Prep:*")
             parts.extend(prep_lines)
 
-    # Add transport status lines
+    # Transport
     parts.extend(transport_lines)
 
     return "\n".join(parts)
@@ -2323,17 +2447,14 @@ Today's date: {_local_today}"""
         else:
             parts.append("📍 No location specified")
 
-        description = event_data.get("description", "")
-        if description:
-            # Show prep checklist items from description
-            checklist_lines = [
-                line.strip() for line in description.split("\n")
-                if line.strip().startswith("☐")
-            ]
-            if checklist_lines:
-                parts.append("")
-                parts.append("*Suggested prep:*")
-                parts.extend(checklist_lines)
+        # Show tasks from structured data
+        event_tasks = event_data.get("tasks", [])
+        prep_items = [t for t in event_tasks if t.get("category", "prep") == "prep"]
+        if prep_items:
+            parts.append("")
+            parts.append("*Suggested prep:*")
+            for t in prep_items:
+                parts.append(f"[ ] {t['description']}")
 
         parts.append("\nAdd to your calendar?")
         body = "\n".join(parts)
@@ -2489,7 +2610,7 @@ against the calendar events. Date match takes priority over conversation context
    - "matched_event": the title of the event they're referring to (or null if you can't determine it)
    - "gcal_id": the gcal_id of the matched event if available (or null)
    - "update_description": a short description of the update (e.g., "Mark 'Purchase wedding gift' as done")
-   - "updated_description": if the event has a description with checklist items, return the full updated description with the relevant item checked off (☐ → ☑). If no checklist, return null.
+   - "updated_description": if the event has a description with checklist items, return the full updated description with the relevant item checked off ([ ] → [x]). If no checklist, return null.
    - "confirmation_message": a friendly confirmation message to send back to the user
 
 Only output the JSON. No other text."""
@@ -2819,6 +2940,309 @@ async def _handle_unknown(
         "I'm not quite sure what you mean. You can:\n"
         "- Tell me about an event (e.g., \"Soccer practice Saturday 10am\")\n"
         "- Ask about your schedule (e.g., \"What's this week look like?\")\n"
+        "- Add a todo (e.g., \"Remind me to RSVP by Friday\")\n"
         "- Assign transport (e.g., \"I'll pick up Emma from soccer\")\n"
         "Or just ask me anything!"
     )
+
+
+# ── Todo handlers ─────────────────────────────────────────────────────
+
+
+async def _handle_add_todo(
+    session: AsyncSession,
+    family_id: UUID,
+    intent: IntentResult,
+    message: str,
+    sender_id: UUID,
+) -> str:
+    """Handle add_todo intent — create a new todo from WhatsApp."""
+    from pydantic import BaseModel, Field
+
+    from src.state import outbox as outbox_dal
+    from src.state import todos as todos_dal
+    from src.state.models import EventSource, GcalOutboxOperation, TodoType
+    from src.state.todos import get_reminder_days
+
+    class ExtractedTodoFromChat(BaseModel):
+        description: str
+        todo_type: str = "other"
+        due_date: datetime | None = None
+        child_names: list[str] = Field(default_factory=list)
+        suggested_reminder_days: int | None = None
+
+    local_now = await _get_local_now(session, family_id)
+
+    result = await extract(
+        prompt=f"Current date/time: {local_now.isoformat()}\n\nUser message: {message}\n\nExtract the todo details.",
+        system=(
+            "Extract a todo/task from the user's message. Include description, "
+            "todo_type (form_to_sign, payment_due, item_to_bring, item_to_purchase, "
+            "registration_deadline, rsvp_needed, contact_needed, other), "
+            "due_date (ISO 8601 with timezone if mentioned), child_names if applicable, "
+            "and suggested_reminder_days based on effort required."
+        ),
+        schema=ExtractedTodoFromChat,
+    )
+
+    if not result.due_date:
+        # Create a pending action to ask for the due date
+        pending = await pending_dal.create_pending_action(
+            session,
+            family_id=family_id,
+            action_type=PendingActionType.todo_confirmation,
+            draft_content=result.description,
+            context={
+                "todo_data": result.model_dump(mode="json"),
+                "source": "manual",
+                "ask_type": "due_date",
+            },
+        )
+        return f"Got it: *{result.description}*\n\nWhen do you need to do this by?"
+
+    # Resolve todo type
+    todo_type = TODO_TYPE_MAP.get(result.todo_type, TodoType.other)
+    reminder_days = get_reminder_days(todo_type, result.suggested_reminder_days)
+
+    todo = await todos_dal.create_todo(
+        session,
+        family_id,
+        source=EventSource.manual,
+        type=todo_type,
+        description=result.description,
+        due_date=result.due_date,
+        reminder_days_before=reminder_days,
+        confirmed_by_caregiver=True,
+    )
+
+    # Resolve children
+    from src.state import children as children_dal
+    from src.actions.state import resolve_child_names
+
+    children = await children_dal.get_children_for_family(session, family_id)
+    child_name_map = {c.name.lower(): c.id for c in children}
+    child_ids = resolve_child_names(result.child_names, child_name_map)
+    if child_ids:
+        await todos_dal.link_children_to_todo(session, family_id, todo.id, child_ids)
+
+    # Enqueue GCal write for the todo deadline
+    if todo.due_date:
+        await outbox_dal.enqueue_gcal_write(
+            session, family_id, event_id=None,
+            operation=GcalOutboxOperation.create,
+            payload={},
+            idempotency_key=f"create:todo:{todo.id}",
+            todo_id=todo.id,
+        )
+
+    due_str = result.due_date.strftime("%a %b %d")
+    response = f"Todo added: *{result.description}* (due {due_str})"
+
+    if reminder_days:
+        from datetime import timedelta
+        reminder_date = result.due_date - timedelta(days=reminder_days)
+        # Immediate nudge if within reminder window (but not already overdue)
+        if result.due_date > local_now and (result.due_date - local_now).days <= reminder_days:
+            response += "\n\nHeads up — this is coming up soon! You may want to handle it now."
+        else:
+            response += f"\nI'll remind you on {reminder_date.strftime('%b %d')}."
+
+    return response
+
+
+async def _handle_complete_todo(
+    session: AsyncSession,
+    family_id: UUID,
+    intent: IntentResult,
+    message: str,
+    sender_id: UUID,
+) -> str:
+    """Handle complete_todo intent — mark a todo as done."""
+    from src.state import outbox as outbox_dal
+    from src.state import todos as todos_dal
+    from src.state.models import GcalOutboxOperation
+
+    # Find the todo by fuzzy matching
+    todo = await todos_dal.find_todo_by_description(session, family_id, message)
+
+    if not todo:
+        # List pending todos so user can clarify
+        pending = await todos_dal.get_pending_todos(session, family_id)
+        if not pending:
+            return "You don't have any pending todos!"
+        lines = [f"{i+1}. {t.description}" for i, t in enumerate(pending[:5])]
+        return "Which todo did you complete?\n" + "\n".join(lines)
+
+    await todos_dal.complete_todo(session, family_id, todo.id)
+
+    # Delete standalone GCal entry if exists
+    if todo.gcal_event_id:
+        await outbox_dal.enqueue_gcal_write(
+            session, family_id, event_id=None,
+            operation=GcalOutboxOperation.delete,
+            payload={},
+            idempotency_key=f"delete:todo:{todo.id}",
+            gcal_event_id=todo.gcal_event_id,
+            todo_id=todo.id,
+        )
+
+    # Update parent event's GCal description to show [x] for this todo
+    if todo.event_id:
+        event = await events_dal.get_event(session, family_id, todo.event_id)
+        if event:
+            try:
+                await outbox_dal.enqueue_gcal_write(
+                    session, family_id, event.id,
+                    GcalOutboxOperation.update, {},
+                    idempotency_key=f"update:{event.id}:{uuid4().hex[:12]}",
+                )
+            except Exception:
+                logger.debug("Could not enqueue parent event update for completed todo", exc_info=True)
+
+    return f"Done! Marked as complete: *{todo.description}* ✓"
+
+
+async def _handle_list_todos(
+    session: AsyncSession,
+    family_id: UUID,
+    intent: IntentResult,
+    message: str,
+    sender_id: UUID,
+) -> str:
+    """Handle list_todos intent — show pending todos."""
+    from src.state import todos as todos_dal
+
+    local_now = await _get_local_now(session, family_id)
+    pending = await todos_dal.get_pending_todos(session, family_id)
+
+    if not pending:
+        return "You're all caught up! No pending todos."
+
+    # Group by urgency
+    overdue = []
+    due_today = []
+    due_this_week = []
+    later = []
+    no_date = []
+
+    today_end = local_now.replace(hour=23, minute=59, second=59)
+    week_end = local_now + timedelta(days=7)
+
+    for t in pending:
+        if not t.due_date:
+            no_date.append(t)
+        elif t.due_date <= local_now:
+            overdue.append(t)
+        elif t.due_date <= today_end:
+            due_today.append(t)
+        elif t.due_date <= week_end:
+            due_this_week.append(t)
+        else:
+            later.append(t)
+
+    lines = []
+    if overdue:
+        lines.append("*OVERDUE:*")
+        for t in overdue:
+            lines.append(f"• {t.description} (was due {t.due_date.strftime('%b %d')})")
+    if due_today:
+        lines.append("*Due today:*")
+        for t in due_today:
+            lines.append(f"• {t.description}")
+    if due_this_week:
+        lines.append("*This week:*")
+        for t in due_this_week:
+            lines.append(f"• {t.description} (due {t.due_date.strftime('%a %b %d')})")
+    if later:
+        lines.append("*Later:*")
+        for t in later:
+            lines.append(f"• {t.description} (due {t.due_date.strftime('%b %d')})")
+    if no_date:
+        lines.append("*No deadline:*")
+        for t in no_date:
+            lines.append(f"• {t.description}")
+
+    return "\n".join(lines)
+
+
+# ── Todo from pending action ──────────────────────────────────────────
+
+
+async def _create_todo_from_pending(
+    session: AsyncSession,
+    family_id: UUID,
+    pending_action,
+) -> str:
+    """Create a todo from a confirmed pending action (email extraction or WhatsApp)."""
+    from src.state import children as children_dal
+    from src.state import outbox as outbox_dal
+    from src.state import todos as todos_dal
+    from src.state.models import EventSource, GcalOutboxOperation, TodoType
+    from src.state.todos import get_reminder_days
+    from src.actions.state import resolve_child_names
+
+    ctx = pending_action.context
+    todo_data = ctx.get("todo_data", {})
+
+    # Resolve type
+    action_type_str = todo_data.get("action_type", "other")
+    todo_type = TODO_TYPE_MAP.get(action_type_str, TodoType.other)
+
+    suggested_reminder = todo_data.get("suggested_reminder_days")
+    reminder_days = get_reminder_days(todo_type, suggested_reminder)
+
+    # Parse due_date
+    due_date = None
+    due_date_str = todo_data.get("due_date")
+    if due_date_str:
+        try:
+            due_date = datetime.fromisoformat(due_date_str)
+        except (ValueError, TypeError):
+            pass
+
+    source_str = ctx.get("source", "email")
+    source_map = {
+        "email": EventSource.email,
+        "manual": EventSource.manual,
+        "forwarded": EventSource.forwarded,
+    }
+    source = source_map.get(source_str, EventSource.email)
+
+    todo = await todos_dal.create_todo(
+        session,
+        family_id,
+        source=source,
+        source_ref=ctx.get("source_ref"),
+        type=todo_type,
+        description=todo_data.get("description", pending_action.draft_content),
+        due_date=due_date,
+        reminder_days_before=reminder_days,
+        confirmed_by_caregiver=True,
+    )
+
+    # Link children
+    child_names = todo_data.get("child_names", [])
+    if child_names:
+        children = await children_dal.get_children_for_family(session, family_id)
+        child_name_map = {c.name.lower(): c.id for c in children}
+        child_ids = resolve_child_names(child_names, child_name_map)
+        if child_ids:
+            await todos_dal.link_children_to_todo(session, family_id, todo.id, child_ids)
+
+    # Enqueue GCal write
+    if due_date:
+        await outbox_dal.enqueue_gcal_write(
+            session, family_id, event_id=None,
+            operation=GcalOutboxOperation.create,
+            payload={},
+            idempotency_key=f"create:todo:{todo.id}",
+            todo_id=todo.id,
+        )
+
+    due_str = f" (due {due_date.strftime('%b %d')})" if due_date else ""
+    response = f"Todo added: *{todo.description}*{due_str} ✓"
+    if due_date and reminder_days:
+        from datetime import timedelta
+        reminder_date = due_date - timedelta(days=reminder_days)
+        response += f"\nI'll remind you on {reminder_date.strftime('%b %d')}."
+    return response

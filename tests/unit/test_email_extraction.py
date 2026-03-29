@@ -10,8 +10,8 @@ from uuid import uuid4
 
 import pytest
 from src.extraction.email import (
-    ExtractedActionItem,
     ExtractedEvent,
+    ExtractedTask,
     ExtractionResult,
     extract_from_email,
     process_email,
@@ -147,12 +147,14 @@ class TestExtractionOutput:
                     confidence=0.9,
                 )
             ],
-            action_items=[
-                ExtractedActionItem(
+            todos=[
+                ExtractedTask(
                     description="RSVP for Spring Concert by March 18",
+                    category="todo",
                     action_type="rsvp_needed",
                     due_date=datetime(2026, 3, 18, 23, 59, tzinfo=UTC),
                     confidence=0.85,
+                    suggested_reminder_days=1,
                 )
             ],
             learnings=[],
@@ -166,8 +168,8 @@ class TestExtractionOutput:
         assert result.events[0].title == "Spring Concert"
         assert result.events[0].event_type == "school_event"
         assert result.events[0].rsvp_needed is True
-        assert len(result.action_items) == 1
-        assert result.action_items[0].action_type == "rsvp_needed"
+        assert len(result.todos) == 1
+        assert result.todos[0].action_type == "rsvp_needed"
 
     @patch("src.extraction.email.extract")
     @patch("src.extraction.email.children_dal")

@@ -24,16 +24,19 @@ async def enqueue_gcal_write(
     payload: dict,
     idempotency_key: str,
     gcal_event_id: str | None = None,
+    todo_id: UUID | None = None,
 ) -> GcalOutboxItem | None:
     """Enqueue a GCal write operation. Returns the item, or None if duplicate (idempotent).
 
     Uses INSERT ... ON CONFLICT DO NOTHING to prevent duplicate enqueues.
+    Supports both event and todo GCal writes via event_id/todo_id.
     """
     stmt = (
         insert(GcalOutboxItem)
         .values(
             family_id=family_id,
             event_id=event_id,
+            todo_id=todo_id,
             operation=operation,
             payload=payload,
             gcal_event_id=gcal_event_id,
@@ -45,7 +48,8 @@ async def enqueue_gcal_write(
     result = await session.execute(stmt)
     row = result.scalar_one_or_none()
     if row:
-        logger.info("Enqueued GCal %s for event %s (key=%s)", operation, event_id, idempotency_key)
+        ref = f"event {event_id}" if event_id else f"todo {todo_id}"
+        logger.info("Enqueued GCal %s for %s (key=%s)", operation, ref, idempotency_key)
     else:
         logger.debug("Duplicate outbox entry skipped (key=%s)", idempotency_key)
     return row

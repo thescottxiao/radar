@@ -496,7 +496,16 @@ async def _apply_single_assignment(
             setattr(target_event, k, v)
 
     role_text = _role_label(role)
-    time_str = target_event.datetime_start.strftime("%A, %B %d at %I:%M %p")
+    # Convert to family timezone for display
+    event_dt = target_event.datetime_start
+    family = await families_dal.get_family(session, family_id)
+    if family and family.timezone and event_dt.tzinfo:
+        import zoneinfo
+        try:
+            event_dt = event_dt.astimezone(zoneinfo.ZoneInfo(family.timezone))
+        except (KeyError, ValueError):
+            pass
+    time_str = event_dt.strftime("%A, %B %d at %I:%M %p")
 
     confirm = (
         f"• {role_text} for {child_name} at "
@@ -517,10 +526,12 @@ async def _apply_single_assignment(
     except Exception:
         logger.debug("Could not track transport claim for routine inference", exc_info=True)
 
-    # Check off transport prep item
+    # Check off transport prep item (handle both old and new checkbox formats)
     if target_event.drop_off_by and target_event.pick_up_by and target_event.description:
         updated_desc = target_event.description.replace(
-            "☐ Arrange drop-off/pick-up", "☑ Arrange drop-off/pick-up"
+            "[ ] Arrange drop-off/pick-up", "[x] Arrange drop-off/pick-up"
+        ).replace(
+            "☐ Arrange drop-off/pick-up", "[x] Arrange drop-off/pick-up"
         )
         if updated_desc != target_event.description:
             target_event.description = updated_desc

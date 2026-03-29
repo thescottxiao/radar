@@ -70,7 +70,7 @@ class TaskStatus(enum.StrEnum):
     complete = "complete"
 
 
-class ActionItemType(enum.StrEnum):
+class TodoType(enum.StrEnum):
     form_to_sign = "form_to_sign"
     payment_due = "payment_due"
     item_to_bring = "item_to_bring"
@@ -81,7 +81,7 @@ class ActionItemType(enum.StrEnum):
     other = "other"
 
 
-class ActionItemStatus(enum.StrEnum):
+class TodoStatus(enum.StrEnum):
     pending = "pending"
     complete = "complete"
     dismissed = "dismissed"
@@ -110,6 +110,7 @@ class PendingActionType(enum.StrEnum):
     camp_registration = "camp_registration"
     general_approval = "general_approval"
     event_confirmation = "event_confirmation"
+    todo_confirmation = "todo_confirmation"
 
 
 class PendingActionStatus(enum.StrEnum):
@@ -130,8 +131,8 @@ Base.registry.update_type_annotation_map({
     RsvpMethod: SAEnum(RsvpMethod, name="rsvp_method", create_type=False),
     ActivityType: SAEnum(ActivityType, name="activity_type", create_type=False),
     TaskStatus: SAEnum(TaskStatus, name="task_status", create_type=False),
-    ActionItemType: SAEnum(ActionItemType, name="action_item_type", create_type=False),
-    ActionItemStatus: SAEnum(ActionItemStatus, name="action_item_status", create_type=False),
+    TodoType: SAEnum(TodoType, name="todo_type", create_type=False),
+    TodoStatus: SAEnum(TodoStatus, name="todo_status", create_type=False),
     PendingActionType: SAEnum(PendingActionType, name="pending_action_type", create_type=False),
     PendingActionStatus: SAEnum(PendingActionStatus, name="pending_action_status", create_type=False),
 })
@@ -399,41 +400,48 @@ class PrepTask(Base):
     )
 
 
-# ── Action items ────────────────────────────────────────────────────────
+# ── Todos ──────────────────────────────────────────────────────────────
+# Tasks with their own deadline/lifecycle. Can be standalone or linked to events.
+# Distinction from prep_tasks: todos require effort/time before the event
+# (buy gift, RSVP). Prep tasks are "have this when you leave" (bring shin guards).
 
 
-class ActionItem(Base):
-    __tablename__ = "action_items"
+class Todo(Base):
+    __tablename__ = "todos"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
     event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id", ondelete="SET NULL"))
     source: Mapped[EventSource] = mapped_column(nullable=False)
     source_ref: Mapped[str | None] = mapped_column(Text)
-    type: Mapped[ActionItemType] = mapped_column(nullable=False, default=ActionItemType.other)
+    type: Mapped[TodoType] = mapped_column(nullable=False, default=TodoType.other)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    status: Mapped[ActionItemStatus] = mapped_column(nullable=False, default=ActionItemStatus.pending)
+    status: Mapped[TodoStatus] = mapped_column(nullable=False, default=TodoStatus.pending)
     assigned_to: Mapped[UUID | None] = mapped_column(ForeignKey("caregivers.id"))
+    gcal_event_id: Mapped[str | None] = mapped_column(Text)
+    reminder_days_before: Mapped[int | None] = mapped_column()
+    reminder_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by_caregiver: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("NOW()")
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    children: Mapped[list["ActionItemChild"]] = relationship(cascade="all, delete-orphan")
+    children: Mapped[list["TodoChild"]] = relationship(cascade="all, delete-orphan")
 
     __table_args__ = (
-        Index("idx_action_items_family", "family_id"),
-        Index("idx_action_items_status", "family_id", "status"),
-        Index("idx_action_items_due", "family_id", "due_date"),
+        Index("idx_todos_family", "family_id"),
+        Index("idx_todos_status", "family_id", "status"),
+        Index("idx_todos_due", "family_id", "due_date"),
     )
 
 
-class ActionItemChild(Base):
-    __tablename__ = "action_item_children"
+class TodoChild(Base):
+    __tablename__ = "todo_children"
 
-    action_item_id: Mapped[UUID] = mapped_column(
-        ForeignKey("action_items.id", ondelete="CASCADE"), primary_key=True
+    todo_id: Mapped[UUID] = mapped_column(
+        ForeignKey("todos.id", ondelete="CASCADE"), primary_key=True
     )
     child_id: Mapped[UUID] = mapped_column(
         ForeignKey("children.id", ondelete="CASCADE"), primary_key=True
@@ -595,6 +603,7 @@ class GcalOutboxItem(Base):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     family_id: Mapped[UUID] = mapped_column(ForeignKey("families.id", ondelete="CASCADE"), nullable=False)
     event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id", ondelete="SET NULL"))
+    todo_id: Mapped[UUID | None] = mapped_column(ForeignKey("todos.id", ondelete="SET NULL"))
     operation: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     gcal_event_id: Mapped[str | None] = mapped_column(Text)
